@@ -31,11 +31,35 @@ thread_local! {
     static FILE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// On Unix the raw OS error IS the errno `rb_syserr_new` expects.
+#[cfg(unix)]
+fn errno_of(e: &std::io::Error) -> Option<i32> {
+    e.raw_os_error()
+}
+
+/// On Windows the raw OS error is a Win32 code, not a POSIX errno
+/// (ERROR_PATH_NOT_FOUND = 3 read as errno 3 raised Errno::ESRCH on
+/// CI), so map the portable ErrorKind onto the classic CRT errno
+/// values Ruby's Errno classes use. Unmapped kinds fall back to a
+/// plain RuntimeError with the message.
+#[cfg(windows)]
+fn errno_of(e: &std::io::Error) -> Option<i32> {
+    const ENOENT: i32 = 2;
+    const EACCES: i32 = 13;
+    const EEXIST: i32 = 17;
+    match e.kind() {
+        std::io::ErrorKind::NotFound => Some(ENOENT),
+        std::io::ErrorKind::PermissionDenied => Some(EACCES),
+        std::io::ErrorKind::AlreadyExists => Some(EEXIST),
+        _ => None,
+    }
+}
+
 /// Map an I/O failure onto the matching `Errno::*` exception (class
 /// parity with `File.read`/`File.write`; the message carries the path).
 fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     use magnus::rb_sys::FromRawValue;
-    let Some(errno) = e.raw_os_error() else {
+    let Some(errno) = errno_of(e) else {
         return err(ruby, format!("{e} - {path}"));
     };
     let Ok(cpath) = std::ffi::CString::new(path) else {
