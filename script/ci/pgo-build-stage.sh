@@ -7,18 +7,30 @@
 # binary runs on any CPU of the target arch (the crate runtime-detects
 # AVX2 on x86-64). Stages the result under tmp/native-gem/<major.minor>/.
 #
+# SKIP_PGO=1 builds a plain portable release instead: for targets whose
+# Rust distribution has no profiler runtime (x86_64-pc-windows-gnu),
+# where -C profile-generate cannot compile at all. Every other platform
+# gem is PGO.
+#
 # Usage: script/ci/pgo-build-stage.sh   (from the repo root)
 set -e
 
 ruby_minor="$(ruby -e 'print RUBY_VERSION[/\d+\.\d+/]')"
 dlext="$(ruby -e 'print RbConfig::CONFIG["DLEXT"]')"
 
-echo "== PGO build for Ruby ${ruby_minor} (portable codegen)"
+# A stale profile would otherwise be auto-applied by rake compile.
 rm -rf tmp/pgo
-# Default to portable codegen (no target-cpu=native), but let the caller
-# inject platform-required flags (musl needs -crt-static off, see
-# alpine-pgo-build.sh).
-PGO_BASE_RUSTFLAGS="${PGO_BASE_RUSTFLAGS-}" ./script/pgo.sh
+
+if [ "${SKIP_PGO:-}" = "1" ]; then
+  echo "== plain build for Ruby ${ruby_minor} (no profiler runtime on this target)"
+  RUSTFLAGS="${PGO_BASE_RUSTFLAGS-}" bundle exec rake compile
+else
+  echo "== PGO build for Ruby ${ruby_minor} (portable codegen)"
+  # Default to portable codegen (no target-cpu=native), but let the caller
+  # inject platform-required flags (musl needs -crt-static off, see
+  # alpine-pgo-build.sh).
+  PGO_BASE_RUSTFLAGS="${PGO_BASE_RUSTFLAGS-}" ./script/pgo.sh
+fi
 
 stage="tmp/native-gem/${ruby_minor}"
 mkdir -p "$stage"

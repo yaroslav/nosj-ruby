@@ -92,12 +92,16 @@ jobs:
           - { platform: x86_64-linux, os: ubuntu-latest }
           - { platform: aarch64-linux, os: ubuntu-24.04-arm }
           - { platform: arm64-darwin, os: macos-latest }
-          # Windows PGO runs on the windows-gnu target (the UCRT Ruby
-          # toolchain); rustc ships its profiler runtime there, but this
-          # is the least-traveled leg: if it misbehaves, drop the
-          # platform from the matrix rather than shipping non-PGO quietly.
-          - { platform: x64-mingw-ucrt, os: windows-latest }
+          # Windows builds on the windows-gnu target (the UCRT Ruby
+          # toolchain), whose Rust distribution ships NO profiler
+          # runtime: -C profile-generate cannot compile there
+          # (E0463 profiler_builtins, verified 2026-07-16). The Windows
+          # gem is therefore the one plain (non-PGO) release build,
+          # documented in the README.
+          - { platform: x64-mingw-ucrt, os: windows-latest, skip_pgo: "1" }
     runs-on: ${{ matrix.os }}
+    env:
+      SKIP_PGO: ${{ matrix.skip_pgo || '' }}
     steps:
       - uses: actions/checkout@v6
         with:
