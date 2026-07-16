@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.2.0] - 2026-07-16
 
 - File APIs. `NOSJ.load_file(path, opts)` parses a file directly
   (~1.3× faster than `parse(File.read(path))`—no file-sized Ruby
