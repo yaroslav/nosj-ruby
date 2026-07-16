@@ -29,7 +29,7 @@ export BUNDLE_PATH=vendor/bundle-alpine
 # cannot dlopen: rb-sys's build script would fail to load libclang
 # ("Dynamic loading not supported"), and a Ruby extension must be a
 # dynamic .so anyway. Applies to every compile in the PGO cycle.
-export PGO_BASE_RUSTFLAGS="-C target-feature=-crt_static"
+export PGO_BASE_RUSTFLAGS="-C target-feature=-crt-static"
 
 bundle install --quiet
 ./script/ci/pgo-build-stage.sh
