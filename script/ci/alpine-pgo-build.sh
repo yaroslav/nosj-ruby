@@ -8,7 +8,9 @@
 #   sh script/ci/alpine-pgo-build.sh
 set -e
 
-apk add --no-cache build-base curl bash git linux-headers clang
+# clang-dev (not just clang) is required: it is what places libclang.so
+# in /usr/lib, where rb-sys's bindgen looks for it.
+apk add --no-cache build-base curl bash git linux-headers clang-dev
 
 # rustup: the apk rust is often behind the crate's MSRV; llvm-tools
 # provides llvm-profdata for the profile merge.
@@ -22,5 +24,12 @@ cd /work
 # Env-only bundler path: a --local config file would persist root-owned
 # state into the mounted checkout and poison later host steps.
 export BUNDLE_PATH=vendor/bundle-alpine
+
+# rustup musl toolchains default to +crt-static, and a static binary
+# cannot dlopen: rb-sys's build script would fail to load libclang
+# ("Dynamic loading not supported"), and a Ruby extension must be a
+# dynamic .so anyway. Applies to every compile in the PGO cycle.
+export PGO_BASE_RUSTFLAGS="-C target-feature=-crt_static"
+
 bundle install --quiet
 ./script/ci/pgo-build-stage.sh

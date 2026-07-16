@@ -1,4 +1,4 @@
-# nosj
+# gem nosj
 
 **gem nosj** is an **very fast JSON parser and generator for Ruby**, written in Rust on the first-party [nosj](https://github.com/yaroslav/nosj) crate and **SIMD-accelerated** on every platform (NEON on Apple Silicon, SSE2/AVX2 on x86-64).
 
@@ -7,14 +7,13 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yaroslav/nosj-ruby)](https://github.com/yaroslav/nosj-ruby/releases)
 [![Docs](https://img.shields.io/badge/yard-docs-blue.svg)](https://rubydoc.info/gems/nosj)
 
-Same API and option names, but:
-
 - It is **faster** than gem json and every
 third-party parser, including Oj, RapidJSON, FastJsonparser, Yajl. 1.0–1.8× faster than the bundled json gem, 1.3–11× faster than Oj, and up to 17×
 faster than Yajl—[see Benchmarks](#benchmarks).
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
-- And it has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
+- It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
+- Same API and option names as gem json.
 
 **And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, and accelerate an entire application with a one-line drop-in.
 

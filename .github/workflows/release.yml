@@ -56,6 +56,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      # Packaging the source gem needs no toolchain, but the smoke-test
+      # step compiles it via extconf on install, and the runner image's
+      # preinstalled rustc can lag the nosj crate's rust-version; install
+      # current stable explicitly.
+      - uses: dtolnay/rust-toolchain@stable
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
@@ -97,31 +103,35 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools
-
-      - name: Add the GNU target for the UCRT Ruby toolchain
-        if: runner.os == 'Windows'
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - uses: ruby/setup-ruby@v1
+      # setup-ruby-and-rust wires Ruby and Rust together per platform:
+      # on the UCRT Ruby it derives the x86_64-pc-windows-gnu toolchain
+      # and points bindgen at the MSYS2 sysroot (rb-sys cannot build on
+      # windows-gnu without that). llvm-tools provides llvm-profdata for
+      # the PGO merge; the cargo cache stays off so instrumented and
+      # optimized builds never mix.
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
         with:
           ruby-version: "3.3"
+          rustup-components: llvm-tools
+          cargo-cache: "false"
       - name: PGO build (Ruby 3.3)
         shell: bash
         run: bundle install && ./script/ci/pgo-build-stage.sh
 
-      - uses: ruby/setup-ruby@v1
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
         with:
           ruby-version: "3.4"
+          rustup-components: llvm-tools
+          cargo-cache: "false"
       - name: PGO build (Ruby 3.4)
         shell: bash
         run: bundle install && ./script/ci/pgo-build-stage.sh
 
-      - uses: ruby/setup-ruby@v1
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
         with:
           ruby-version: "4.0"
+          rustup-components: llvm-tools
+          cargo-cache: "false"
       - name: PGO build (Ruby 4.0)
         shell: bash
         run: bundle install && ./script/ci/pgo-build-stage.sh

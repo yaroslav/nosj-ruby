@@ -9,8 +9,6 @@ require "standard/rake"
 
 require "rb_sys/extensiontask"
 
-task build: :compile
-
 GEMSPEC = Gem::Specification.load("nosj.gemspec")
 
 # Every compile is a PGO build when a profile exists: `rake compile` applies

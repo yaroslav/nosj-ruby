@@ -15,7 +15,10 @@ dlext="$(ruby -e 'print RbConfig::CONFIG["DLEXT"]')"
 
 echo "== PGO build for Ruby ${ruby_minor} (portable codegen)"
 rm -rf tmp/pgo
-PGO_BASE_RUSTFLAGS="" ./script/pgo.sh
+# Default to portable codegen (no target-cpu=native), but let the caller
+# inject platform-required flags (musl needs -crt_static, see
+# alpine-pgo-build.sh).
+PGO_BASE_RUSTFLAGS="${PGO_BASE_RUSTFLAGS-}" ./script/pgo.sh
 
 stage="tmp/native-gem/${ruby_minor}"
 mkdir -p "$stage"
