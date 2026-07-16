@@ -10,10 +10,11 @@
 - It is **faster** than gem json and every
 third-party parser, including Oj, RapidJSON, FastJsonparser, Yajl. 1.0–1.8× faster than the bundled json gem, 1.3–11× faster than Oj, and up to 17×
 faster than Yajl—[see Benchmarks](#benchmarks).
+- It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
+- It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
+- It has **file APIs**: parse, generate, dig, and lazy-wrap files directly—no throwaway file-sized Ruby String, and the partial modes memory-map the file so unread pages never even leave the disk.
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
-- It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
-- It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
 - Otherwise, same API and option names as gem json.
 
 **And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, and accelerate an entire application with a one-line drop-in.
@@ -84,16 +85,22 @@ NOSJ.generate(obj)                       # indent, space, object_nl, ...,
 NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict
 ```
 
-**Validation without parsing.** `NOSJ.valid?` runs the full
-parser—tokenizers, string decode, number validation—into a null sink
-and allocates no Ruby objects at all. It is 2-4× faster than
-`NOSJ.parse`, which already leads every parser above:
+**Lazy documents.** `NOSJ.lazy` wraps a document in a lazy view: read
+a field and only that path is parsed—containers stay lazy, scalars
+arrive as plain Ruby values, and repeated reads are cached:
 
 ```ruby
-NOSJ.valid?('{"a":1}')                #=> true
-NOSJ.valid?('{"a":}')                 #=> false
-NOSJ.valid?(src, max_nesting: false)  # same options as parse
+doc = NOSJ.lazy(json)
+doc["users"][3]["name"]   # parses only this path
+doc.dig("meta", "count")  # a whole path in one fused resolution
+doc["users"].size         # counted without materializing anything
+doc["users"][3].value     # materialize one subtree (parse options apply)
 ```
+
+Pass a frozen string and creating the view is practically free—
+nanoseconds, even on a megabyte document. Malformed content raises
+when it is first read, not at wrap time.
+
 
 **Partial parsing.** Pull values out of a document without
 materializing the rest—skipped content is stepped over at SIMD block
@@ -115,27 +122,38 @@ at the far end of a 570 KB document costs ~71µs, still 13× faster
 than parse-then-dig. Misses return nil; matched subtrees materialize
 with the same options as `parse` (`symbolize_names:`, `freeze:`).
 
-**Lazy documents.** `NOSJ.lazy` wraps a document in a lazy view: read
-a field and only that path is parsed—containers stay lazy, scalars
-arrive as plain Ruby values, and repeated reads are cached:
+**Files.** Every mode has a file-native form, so a document never
+round-trips through a throwaway Ruby String:
 
 ```ruby
-doc = NOSJ.lazy(json)
-doc["users"][3]["name"]   # parses only this path
-doc.dig("meta", "count")  # a whole path in one fused resolution
-doc["users"].size         # counted without materializing anything
-doc["users"][3].value     # materialize one subtree (parse options apply)
+NOSJ.load_file("config.json")                 # 1.3× File.read + parse
+NOSJ.write_file("out.json", obj)              # generate straight to disk
+NOSJ.dig_file("huge.json", "users", 3, "name")   # never reads the rest
+NOSJ.at_pointer_file("huge.json", "/meta/count")
+doc = NOSJ.load_lazy_file("huge.json")        # lazy view over a memory map
 ```
 
-Pass a frozen string and creating the view is practically free—
-nanoseconds, even on a megabyte document. Malformed content raises
-when it is first read, not at wrap time.
+The partial and lazy forms memory-map the file, so pages you never
+read are never loaded from disk. Missing files raise the usual
+`Errno` exceptions. Measured numbers live in
+[Benchmarks → File APIs](#file-apis).
+
+**Validation without parsing.** `NOSJ.valid?` runs the full
+parser—tokenizers, string decode, number validation—into a null sink
+and allocates no Ruby objects at all. It is 2-4× faster than
+`NOSJ.parse`, which already leads every parser above:
+
+```ruby
+NOSJ.valid?('{"a":1}')                #=> true
+NOSJ.valid?('{"a":}')                 #=> false
+NOSJ.valid?(src, max_nesting: false)  # same options as parse
+```
 
 ## Benchmarks
 
 Every installed JSON gem, benchmark-ips: AWS EC2 c7a.2xlarge (AMD EPYC 9R14, Zen 4), Ruby 4.0.6 + YJIT, json 2.21.1, Oj 3.17.4, RapidJSON 0.4.0, FastJsonparser 0.6.0, Yajl 1.4.3, PGO build, 2026-07-16. `×N` = times slower than nosj. 
 
-Parse:
+### Parse
 
 | file | nosj (i/s) | json | Oj | FastJsonparser | RapidJSON | Yajl |
 |---|---:|---:|---:|---:|---:|---:|
@@ -153,7 +171,7 @@ Parse:
 | tolstoy | **8.9k** | ×1.79 | ×1.96 | ×2.29 | ×2.10 | ×17.31 |
 | twitter | **1.1k** | ×1.09 | ×1.83 | ×2.25 | ×2.61 | ×5.40 |
 
-Generate:
+### Generate
 
 | file | nosj (i/s) | json | Oj | RapidJSON | Yajl |
 |---|---:|---:|---:|---:|---:|
@@ -173,6 +191,23 @@ Generate:
 
 \* canada-generate is a statistical tie with the json gem (within
 measurement error).
+
+### File APIs
+
+twitter.json (570 KB) from a warm page cache, medians of 7 alternating
+rounds against the plain-Ruby composition on the same parser (Apple
+Silicon dev box, Ruby 4.0.6 + YJIT, PGO build, 2026-07-16):
+
+| operation | µs/op | vs the Ruby way |
+|---|---:|---|
+| `NOSJ.load_file` (parse the whole file) | 948 | ×1.33 vs `NOSJ.parse(File.read(path))` |
+| `NOSJ.dig_file` (one deep field) | 246 | ×5.2 vs read + parse + dig |
+| `NOSJ.load_lazy_file` + one field | 257 | ×5.0 vs read + parse + dig |
+
+`NOSJ.write_file` measures at parity with
+`File.write(NOSJ.generate(obj))` on this box—file-write timings swing
+too much for an honest multiplier; what it saves is the intermediate
+file-sized Ruby String.
 
 Reproduce with `rake bench` (the parity-gated comparison, after a PGO retrain—the shipping configuration) or `rake bench:ips` (the multi-gem shoot-out).
 

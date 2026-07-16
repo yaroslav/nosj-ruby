@@ -26,13 +26,18 @@ use crate::state::PULL_STATE;
 /// GC-marks the string with `rb_gc_mark` semantics, which both keeps it
 /// alive and pins it against compaction, so the captured pointer stays
 /// valid for as long as any node exists. Anything else is copied once.
-enum DocBytes {
+pub(crate) enum DocBytes {
     Owned(Vec<u8>),
     Frozen {
         source: rb_sys::VALUE,
         ptr: *const u8,
         len: usize,
     },
+    /// A read-only file mapping (`NOSJ.load_lazy_file`): pages never
+    /// touched are never read off disk. Concurrent modification of the
+    /// mapped file by another process is documented as unsupported
+    /// (the standard mmap caveat).
+    Mmap(memmap2::Mmap),
 }
 
 /// The shared document: stable bytes plus the parse options every
@@ -59,6 +64,7 @@ impl DocInner {
             // buffer reallocation) and pinned+kept alive by every
             // node's GC mark; see DocBytes.
             DocBytes::Frozen { ptr, len, .. } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
+            DocBytes::Mmap(m) => m,
         }
     }
 }
@@ -152,14 +158,8 @@ pub fn lazy_native(
     data: RString,
     opts: Value,
 ) -> Result<Value, Error> {
-    const WS: [u8; 4] = *b" \t\n\r";
     let o = parse_native_opts(ruby, opts)?;
     let input = utf8_input(ruby, &data)?;
-
-    let Some(start) = input.iter().position(|b| !WS.contains(b)) else {
-        return Err(err(ruby, "unexpected end of input".into()));
-    };
-    let end = input.iter().rposition(|b| !WS.contains(b)).unwrap() + 1;
 
     // Frozen sources are borrowed zero-copy (see DocBytes); `data` is
     // on the caller's machine stack, so it stays pinned through this
@@ -174,7 +174,23 @@ pub fn lazy_native(
     } else {
         DocBytes::Owned(input.to_vec())
     };
-    let doc = Arc::new(DocInner { bytes, opts: o });
+    wrap_root(ruby, bytes, o)
+}
+
+/// Wrap document bytes as the root lazy value. Shared by `NOSJ.lazy`
+/// and `NOSJ.load_lazy_file`; the bytes must already be known UTF-8.
+pub(crate) fn wrap_root(
+    ruby: &Ruby,
+    bytes: DocBytes,
+    opts: ParseNativeOpts,
+) -> Result<Value, Error> {
+    const WS: [u8; 4] = *b" \t\n\r";
+    let doc = Arc::new(DocInner { bytes, opts });
+    let input = doc.bytes();
+    let Some(start) = input.iter().position(|b| !WS.contains(b)) else {
+        return Err(err(ruby, "unexpected end of input".into()));
+    };
+    let end = input.iter().rposition(|b| !WS.contains(b)).unwrap() + 1;
     let sub = &doc.bytes()[start..end];
     resolved_to_value(ruby, &doc, sub)
 }

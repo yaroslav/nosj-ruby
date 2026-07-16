@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- File APIs. `NOSJ.load_file(path, opts)` parses a file directly
+  (~1.3× faster than `parse(File.read(path))`—no file-sized Ruby
+  String is created), and `NOSJ.write_file(path, obj, opts)` generates
+  straight to disk, returning the byte count like `File.write`.
+  `NOSJ.load_lazy_file(path, opts)` wraps a file as a lazy document
+  over a read-only memory map, and `NOSJ.at_pointer_file` /
+  `NOSJ.dig_file` pull single values out of a file without reading the
+  rest into Ruby. Missing files raise the usual `Errno` exceptions.
 - `NOSJ.lazy`: lazy documents. Wrap a document once, then read only
   what you need: `doc["users"][3]["name"]` parses just that path, `#dig`
   and `#at_pointer` resolve whole paths, and `#keys`, `#size`, and

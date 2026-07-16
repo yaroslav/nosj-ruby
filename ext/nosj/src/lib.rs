@@ -7,6 +7,8 @@
 //! - `pointer.rs`: partial parsing (dig, at_pointer, batch forms).
 //! - `lazy.rs`: lazy documents (NOSJ.lazy nodes resolving access on
 //!   demand over shared document bytes).
+//! - `files.rs`: file entry points (load_file, write_file, and the
+//!   mmap-backed load_lazy_file / at_pointer_file / dig_file).
 //! - `sink.rs`: the VALUE-building and validation sinks with their
 //!   interned-key caches.
 //! - `state.rs`: per-thread reusable state and the GC-marked value
@@ -14,6 +16,7 @@
 //! - `gen/`: generation (JSON.generate-compatible walker, options,
 //!   key cache, protect shims, error mapping).
 
+pub mod files;
 pub mod gen;
 pub mod lazy;
 pub mod parse;
@@ -43,6 +46,17 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         method!(pointer::at_pointers_native, 3),
     )?;
     module.define_singleton_method("lazy_native", method!(lazy::lazy_native, 2))?;
+    module.define_singleton_method("load_file_native", method!(files::load_file_native, 2))?;
+    module.define_singleton_method("write_file_native", method!(files::write_file_native, 3))?;
+    module.define_singleton_method(
+        "load_lazy_file_native",
+        method!(files::load_lazy_file_native, 2),
+    )?;
+    module.define_singleton_method(
+        "at_pointer_file_native",
+        method!(files::at_pointer_file_native, 3),
+    )?;
+    module.define_singleton_method("dig_file_native", method!(files::dig_file_native, 2))?;
     let lazy_class = module.define_class("Lazy", ruby.class_object())?;
     // Nodes are only born from NOSJ.lazy / lazy resolution.
     lazy_class.undef_default_alloc_func();

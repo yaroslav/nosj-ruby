@@ -19,6 +19,9 @@ crate-type = ["cdylib", "rlib"]
 magnus = { git = "https://github.com/matsadler/magnus", features = ["embed", "rb-sys"] }
 rb-sys = { version = "0.9.124", default-features = false }
 ahash = "0.8.11"
+# Read-only file mapping for the file entry points (load_lazy_file,
+# at_pointer_file, dig_file): pages never touched are never read.
+memmap2 = "0.9"
 # First-party SIMD JSON parse/generate library (github.com/yaroslav/nosj).
 # For coordinated crate+gem work, temporarily flip to
 # { path = "../../../nosj" } and restore before any commit or release.

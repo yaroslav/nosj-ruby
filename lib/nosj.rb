@@ -192,4 +192,85 @@ module NOSJ
   def self.at_pointers(source, pointers, opts = nil)
     at_pointers_native(source, pointers, opts)
   end
+
+  # Parses a JSON file, like +JSON.load_file+—except the file is read
+  # natively into a reused buffer, so no file-sized Ruby String is ever
+  # created (or garbage-collected).
+  #
+  # @example
+  #   NOSJ.load_file("config.json", symbolize_names: true)
+  #
+  # @param path [String] the file to parse (UTF-8)
+  # @param opts [Hash, nil] the same options as {.parse}
+  # @return [Object] the parsed value tree
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends, like File.read
+  # @raise [RuntimeError] when the document is malformed or not UTF-8
+  def self.load_file(path, opts = nil)
+    load_file_native(path, opts)
+  end
+
+  # Generates +obj+ as JSON and writes it to +path+, streaming the
+  # generator's buffer straight to disk—no intermediate Ruby String.
+  #
+  # @example
+  #   NOSJ.write_file("out.json", {"a" => [1, true]})   #=> 14
+  #   NOSJ.write_file("pretty.json", obj, indent: "  ", object_nl: "\n")
+  #
+  # @param path [String] the file to (over)write
+  # @param obj [Object] the value tree to generate
+  # @param opts [Hash, nil] the same options as {.generate}
+  # @return [Integer] the number of bytes written, like File.write
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends, like File.write
+  # @raise [GeneratorError] like {.generate}
+  def self.write_file(path, obj, opts = nil)
+    write_file_native(path, obj, opts)
+  end
+
+  # Wraps a JSON file as a lazy document ({.lazy} for files): the file
+  # is memory-mapped read-only, so beyond one sequential UTF-8 check,
+  # pages you never read are never loaded from disk. The mapping lives
+  # as long as any node on it; the file must not be modified while it
+  # is in use.
+  #
+  # @example
+  #   doc = NOSJ.load_lazy_file("huge.json")
+  #   doc["users"][3]["name"]   # touches only these pages
+  #
+  # @param path [String] the file to wrap (UTF-8)
+  # @param opts [Hash, nil] {.parse} options applied on materialization
+  # @return [NOSJ::Lazy, Object]
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends
+  # @raise [RuntimeError] when the file is not UTF-8 or the root is malformed
+  def self.load_lazy_file(path, opts = nil)
+    load_lazy_file_native(path, opts)
+  end
+
+  # {.at_pointer} against a file: memory-maps it, resolves the pointer,
+  # materializes only the matched subtree, and never reads the rest
+  # into Ruby.
+  #
+  # @example
+  #   NOSJ.at_pointer_file("huge.json", "/users/3/name")
+  #
+  # @param path [String] the file to query (UTF-8)
+  # @param pointer [String] an RFC 6901 JSON Pointer
+  # @param opts [Hash, nil] materialization options
+  # @return [Object, nil] nil when the pointer misses
+  # @raise [ArgumentError] for malformed pointers
+  def self.at_pointer_file(path, pointer, opts = nil)
+    at_pointer_file_native(path, pointer, opts)
+  end
+
+  # {.dig} against a file: the Hash#dig-shaped counterpart of
+  # {.at_pointer_file}. Negative indices resolve to nil.
+  #
+  # @example
+  #   NOSJ.dig_file("huge.json", "users", 3, "name")
+  #
+  # @param path [String] the file to query (UTF-8)
+  # @param path_elements [Array<String, Symbol, Integer>]
+  # @return [Object, nil]
+  def self.dig_file(path, *path_elements)
+    dig_file_native(path, path_elements)
+  end
 end

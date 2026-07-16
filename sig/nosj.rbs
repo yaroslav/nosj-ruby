@@ -49,6 +49,16 @@ module NOSJ
 
   def self.lazy: (String source, ?opts opts) -> (Lazy | value)
 
+  def self.load_file: (String path, ?opts opts) -> value
+
+  def self.write_file: (String path, untyped obj, ?opts opts) -> Integer
+
+  def self.load_lazy_file: (String path, ?opts opts) -> (Lazy | value)
+
+  def self.at_pointer_file: (String path, String pointer, ?opts opts) -> value
+
+  def self.dig_file: (String path, *path_element path_elements) -> value
+
   # A lazy view of one JSON container: children resolve on first
   # access (containers as further Lazy nodes, scalars as values,
   # misses as nil) and are cached on the node.
