@@ -13,7 +13,10 @@ Gem::Specification.new do |spec|
   spec.description = "gem nosj is an extremely fast, json-gem-compatible JSON parser and generator " \
     "for Ruby: Rust and SIMD via the first-party nosj crate, precompiled platform gems " \
     "with per-platform PGO, partial parsing (JSON Pointer, single and batch), " \
-    "allocation-free validation, and a one-line JSON module drop-in."
+    "lazy documents that parse a value only when you touch it, file APIs that " \
+    "parse, generate, and query files natively (memory-mapped, so unread pages " \
+    "never leave the disk), allocation-free validation, and a one-line JSON " \
+    "module drop-in."
   spec.homepage = "https://github.com/yaroslav/nosj-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3.0"
