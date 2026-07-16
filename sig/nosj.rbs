@@ -47,6 +47,50 @@ module NOSJ
 
   def self.at_pointers: (String source, Array[String] pointers, ?opts opts) -> Array[value]
 
+  def self.lazy: (String source, ?opts opts) -> (Lazy | value)
+
+  # A lazy view of one JSON container: children resolve on first
+  # access (containers as further Lazy nodes, scalars as values,
+  # misses as nil) and are cached on the node.
+  class Lazy
+    include Enumerable[untyped]
+
+    def []: (path_element token) -> (Lazy | value)
+
+    def dig: (path_element first, *path_element rest) -> (Lazy | value)
+
+    def at_pointer: (String pointer) -> (Lazy | value)
+
+    def value: () -> value
+
+    alias materialize value
+
+    def to_h: () -> Hash[String | Symbol, value]
+
+    def to_a: () -> Array[value]
+
+    def object?: () -> bool
+
+    def array?: () -> bool
+
+    def keys: () -> Array[String]
+
+    def size: () -> Integer
+
+    alias length size
+
+    alias count size
+
+    def empty?: () -> bool
+
+    def each: () { (untyped) -> void } -> self
+            | () -> Enumerator[untyped, self]
+
+    def inspect: () -> String
+
+    alias to_s inspect
+  end
+
   # Defined by `require "nosj/multi_json"`. The runtime superclass is
   # multi_json's Adapter (whose namespace differs across multi_json
   # versions), so it is not declared here.

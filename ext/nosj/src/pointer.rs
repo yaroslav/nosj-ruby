@@ -49,21 +49,23 @@ pub fn at_pointer_native(
     at_pointer_impl(ruby, data, &ptr, &o)
 }
 
-/// Convert one dig path (String/Symbol keys, Integer indices) into a
-/// JSON Pointer, `~`/`/` escaped. `None` = a negative index: no pointer
-/// equivalent, the path resolves to `nil` by definition.
-fn path_to_pointer(ruby: &Ruby, path: magnus::RArray) -> Result<Option<String>, Error> {
-    fn push_escaped_token(ptr: &mut String, key: &str) {
-        ptr.push('/');
-        for c in key.chars() {
-            match c {
-                '~' => ptr.push_str("~0"),
-                '/' => ptr.push_str("~1"),
-                c => ptr.push(c),
-            }
+/// Append one RFC 6901 reference token (`/` prefix, `~`/`/` escaped).
+/// Shared with the lazy-document single-step resolver.
+pub(crate) fn push_escaped_token(ptr: &mut String, key: &str) {
+    ptr.push('/');
+    for c in key.chars() {
+        match c {
+            '~' => ptr.push_str("~0"),
+            '/' => ptr.push_str("~1"),
+            c => ptr.push(c),
         }
     }
+}
 
+/// Convert one dig path (String/Symbol keys, Integer indices) into a
+/// JSON Pointer. `None` = a negative index: no pointer equivalent, the
+/// path resolves to `nil` by definition. Shared with `NOSJ::Lazy#dig`.
+pub(crate) fn path_to_pointer(ruby: &Ruby, path: magnus::RArray) -> Result<Option<String>, Error> {
     let mut ptr = String::new();
     for i in 0..path.len() {
         let item: Value = path.entry(i as isize)?;

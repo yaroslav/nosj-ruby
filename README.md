@@ -13,7 +13,8 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
 - It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
-- Same API and option names as gem json.
+- It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
+- Otherwise, same API and option names as gem json.
 
 **And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, and accelerate an entire application with a one-line drop-in.
 
@@ -113,6 +114,22 @@ costs ~980µs on the same document—three orders of magnitude. A field
 at the far end of a 570 KB document costs ~71µs, still 13× faster
 than parse-then-dig. Misses return nil; matched subtrees materialize
 with the same options as `parse` (`symbolize_names:`, `freeze:`).
+
+**Lazy documents.** `NOSJ.lazy` wraps a document in a lazy view: read
+a field and only that path is parsed—containers stay lazy, scalars
+arrive as plain Ruby values, and repeated reads are cached:
+
+```ruby
+doc = NOSJ.lazy(json)
+doc["users"][3]["name"]   # parses only this path
+doc.dig("meta", "count")  # a whole path in one fused resolution
+doc["users"].size         # counted without materializing anything
+doc["users"][3].value     # materialize one subtree (parse options apply)
+```
+
+Pass a frozen string and creating the view is practically free—
+nanoseconds, even on a megabyte document. Malformed content raises
+when it is first read, not at wrap time.
 
 ## Benchmarks
 

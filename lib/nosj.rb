@@ -2,13 +2,15 @@
 
 require_relative "nosj/version"
 require_relative "nosj/native"
+require_relative "nosj/lazy"
 
 # nosj is the evil twin of the +json+ gem: the same API, output bytes,
 # option names, and error messages, backed by the Rust
 # {https://github.com/yaroslav/nosj nosj} crate with SIMD-accelerated
 # parsing and generation. Beyond the +json+ gem's surface it adds
-# zero-allocation validation ({.valid?}) and partial parsing
-# ({.dig}, {.at_pointer}, and their batch forms).
+# zero-allocation validation ({.valid?}), partial parsing
+# ({.dig}, {.at_pointer}, and their batch forms), and lazy documents
+# ({.lazy}).
 #
 # Options arrive as a positional Hash (the +json+ gem's own calling
 # convention); an explicit +**kwargs+ would allocate per call.

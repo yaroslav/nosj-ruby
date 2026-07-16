@@ -5,6 +5,8 @@
 //!   GVL-releasing indexed parse) plus shared option decoding and
 //!   input gating.
 //! - `pointer.rs`: partial parsing (dig, at_pointer, batch forms).
+//! - `lazy.rs`: lazy documents (NOSJ.lazy nodes resolving access on
+//!   demand over shared document bytes).
 //! - `sink.rs`: the VALUE-building and validation sinks with their
 //!   interned-key caches.
 //! - `state.rs`: per-thread reusable state and the GC-marked value
@@ -13,6 +15,7 @@
 //!   key cache, protect shims, error mapping).
 
 pub mod gen;
+pub mod lazy;
 pub mod parse;
 pub mod pointer;
 pub mod sink;
@@ -39,6 +42,19 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         "at_pointers_native",
         method!(pointer::at_pointers_native, 3),
     )?;
+    module.define_singleton_method("lazy_native", method!(lazy::lazy_native, 2))?;
+    let lazy_class = module.define_class("Lazy", ruby.class_object())?;
+    // Nodes are only born from NOSJ.lazy / lazy resolution.
+    lazy_class.undef_default_alloc_func();
+    lazy_class.define_method("__get", method!(lazy::lazy_get, 1))?;
+    lazy_class.define_method("__dig", method!(lazy::lazy_dig, 1))?;
+    lazy_class.define_method("__at_pointer", method!(lazy::lazy_at_pointer, 1))?;
+    lazy_class.define_method("__materialize", method!(lazy::lazy_materialize, 0))?;
+    lazy_class.define_method("__kind", method!(lazy::lazy_kind, 0))?;
+    lazy_class.define_method("__byte_size", method!(lazy::lazy_byte_size, 0))?;
+    lazy_class.define_method("__keys", method!(lazy::lazy_keys, 0))?;
+    lazy_class.define_method("__size", method!(lazy::lazy_size, 0))?;
+    lazy_class.define_method("__children", method!(lazy::lazy_children, 0))?;
     module.define_singleton_method("generate_native", method!(gen::generate_native, 2))?;
     // `generate` itself is native and variadic: the json gem routes
     // its `generate` through a Ruby frame into C, so skipping our own

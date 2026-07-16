@@ -1,4 +1,17 @@
-## [0.1.0] - 2026-07-15
+## [Unreleased]
+
+- `NOSJ.lazy`: lazy documents. Wrap a document once, then read only
+  what you need: `doc["users"][3]["name"]` parses just that path, `#dig`
+  and `#at_pointer` resolve whole paths, and `#keys`, `#size`, and
+  `#each` inspect a node without parsing its values. Containers come
+  back lazy, scalars come back as plain Ruby values, and repeated
+  reads are cached. `#value` (also `#to_h` / `#to_a`) materializes a
+  subtree under the usual parse options (`symbolize_names`, `freeze`,
+  ...). Pass a frozen string and creating the view is practically
+  free, even on megabyte documents. Malformed content raises on first
+  read, not at wrap time.
+
+## [0.1.0] - 2026-07-16
 
 Initial release.
 
