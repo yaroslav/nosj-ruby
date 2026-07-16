@@ -1,0 +1,4 @@
+# Scoped to the host target so cross-compiles (x86_64 tests under Rosetta,
+# CI matrices) don't inherit an ARM-native CPU flag.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=native"]

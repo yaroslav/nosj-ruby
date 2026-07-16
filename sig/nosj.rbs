@@ -1,0 +1,61 @@
+# Public interfaces only. The native layer (NOSJ.parse_native and
+# friends) and the JSON drop-in's patched JSON singleton methods are
+# implementation detail and deliberately unsigned.
+module NOSJ
+  VERSION: String
+
+  # Any value JSON can represent, as Ruby objects: what parse returns
+  # and what partial parsing materializes. Object keys are String
+  # (Symbol with symbolize_names). generate accepts more than this
+  # alias (anything with to_json, unless strict), hence untyped there.
+  type value = nil | bool | Integer | Float | String
+             | Array[value] | Hash[String | Symbol, value]
+
+  # Options arrive as a positional Hash (the JSON gem's own calling
+  # convention; an explicit **kwargs would allocate per call), nil when
+  # omitted. Parse: symbolize_names, freeze, max_nesting, allow_nan,
+  # allow_trailing_comma. Generate: indent, space, space_before,
+  # object_nl, array_nl, max_nesting, allow_nan, ascii_only,
+  # script_safe/escape_slash, strict, depth, buffer_initial_length.
+  type opts = Hash[Symbol, untyped]?
+
+  # One NOSJ.dig path element (negative Integer indices resolve to nil).
+  type path_element = String | Symbol | Integer
+
+  class Error < StandardError
+  end
+
+  class GeneratorError < Error
+  end
+
+  class NestingError < Error
+  end
+
+  def self.parse: (String source, ?opts opts) -> value
+
+  def self.generate: (untyped obj, ?opts opts) -> String
+
+  def self.pretty_generate: (untyped obj, ?opts opts) -> String
+
+  def self.valid?: (String source, ?opts opts) -> bool
+
+  def self.dig: (String source, *path_element path) -> value
+
+  def self.dig_many: (String source, Array[Array[path_element]] paths, ?opts opts) -> Array[value]
+
+  def self.at_pointer: (String source, String pointer, ?opts opts) -> value
+
+  def self.at_pointers: (String source, Array[String] pointers, ?opts opts) -> Array[value]
+
+  # Defined by `require "nosj/multi_json"`. The runtime superclass is
+  # multi_json's Adapter (whose namespace differs across multi_json
+  # versions), so it is not declared here.
+  class MultiJsonAdapter
+    # multi_json wraps whatever the adapter's ParseError names.
+    ParseError: singleton(::JSON::ParserError)
+
+    def load: (String string, ?Hash[Symbol, untyped] options) -> value
+
+    def dump: (untyped object, ?Hash[Symbol, untyped] options) -> String
+  end
+end

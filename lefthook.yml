@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  commands:
+    standardrb:
+      tags: ruby style
+      glob: "{*.rb,*.rake,*.gemspec,Gemfile,Rakefile}"
+      run: bundle exec standardrb {staged_files}
+    rustfmt:
+      tags: rust style
+      glob: "ext/**/*.rs"
+      run: cargo fmt --manifest-path ext/nosj/Cargo.toml --check

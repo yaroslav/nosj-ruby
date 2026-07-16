@@ -1,0 +1,23 @@
+{
+  "arrays": [
+    {
+      "name": "Person 1",
+      "age": 39,
+      "photos": []
+    },
+    {
+      "name": "Person 2",
+      "age": 39,
+      "photos": ["file1.jpg", "file2.jpg"]
+    },
+    {
+      "name": "Person 3",
+      "age": 40,
+      "photos": []
+    }
+  ],
+  "metadata": {
+    "count": 2,
+    "type": "simple"
+  }
+}

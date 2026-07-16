@@ -1,0 +1,13 @@
+nosj (Ruby gem)
+
+Copyright (c) 2026 Yaroslav Markin. Released under the MIT License
+(see LICENSE.txt).
+
+Every distribution of this gem embeds the nosj Rust crate
+(https://github.com/yaroslav/nosj), compiled into the native
+extension: precompiled platform gems ship the compiled binary, and the
+source gem compiles the crate at install time. The crate is licensed
+MIT AND BSL-1.0 AND Apache-2.0; its NOTICE file itemizes the derived
+components (the fpconv/Grisu2 float formatter under BSL-1.0; the
+fast_float decimal conversion and simdjson structural-indexing
+techniques under Apache-2.0) and reproduces each component license.

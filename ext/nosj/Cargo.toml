@@ -1,0 +1,25 @@
+[package]
+# The PACKAGE cannot share the parser crate's name (`nosj` is a
+# dependency below); nosj_native resolves that clash and nothing else.
+# The LIB TARGET is named nosj so the artifact is libnosj → nosj.bundle,
+# required by lib/nosj.rb as "nosj/nosj" (Init_nosj set explicitly in
+# lib.rs). Gem name, module, and API are plain nosj.
+name = "nosj_native"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yaroslav Markin <yaroslav@markin.net>"]
+license = "MIT"
+publish = false
+
+[lib]
+name = "nosj"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+magnus = { git = "https://github.com/matsadler/magnus", features = ["embed", "rb-sys"] }
+rb-sys = { version = "0.9.124", default-features = false }
+ahash = "0.8.11"
+# First-party SIMD JSON parse/generate library (github.com/yaroslav/nosj).
+# For coordinated crate+gem work, temporarily flip to
+# { path = "../../../nosj" } and restore before any commit or release.
+nosj = "0.1.1"

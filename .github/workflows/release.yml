@@ -1,0 +1,286 @@
+name: Release
+
+# Triggered manually. Builds every platform gem from the current commit
+# and (only if every build and smoke test succeeds) creates a git tag,
+# a GitHub Release with the changelog section and the gems, and
+# publishes to RubyGems.
+#
+# Unlike a plain rake-compiler-dock pipeline, every precompiled gem here
+# is built NATIVELY on a runner (or container) of its target platform,
+# because each build runs full PGO: instrument, execute the training
+# workload over the benchmark corpus with the target Ruby on the target
+# CPU, rebuild with the merged profile. Codegen is portable (no
+# target-cpu=native; the extension runtime-detects AVX2 on x86-64).
+#
+# Prerequisite: ext/nosj/Cargo.toml must reference the published nosj
+# crate, not a local path dependency; the preflight job refuses to
+# release otherwise.
+
+on:
+  workflow_dispatch:
+
+env:
+  RUBY_VERSIONS: "3.3 3.4 4.0"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(ruby -e "require_relative 'lib/nosj/version'; print NOSJ::VERSION")
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a version without a changelog section
+        run: |
+          VERSION=$(ruby -e "require_relative 'lib/nosj/version'; print NOSJ::VERSION")
+          awk -v ver="$VERSION" '/^## /{f=($2==ver||index($0,"["ver"]")>0); next} f{print}' \
+            CHANGELOG.md | grep -q . || {
+            echo "CHANGELOG.md has no section for ${VERSION}" >&2; exit 1;
+          }
+
+  # Pure-Ruby source gem: the fallback for platforms without a
+  # precompiled gem; compiles the extension locally via extconf.rb.
+  source:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+
+      - name: Build source gem
+        run: bundle exec rake build
+
+      - name: Smoke-test installed gem
+        run: |
+          gem install pkg/nosj-*.gem
+          ruby script/ci/smoke.rb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-source
+          path: pkg/*.gem
+
+  # glibc Linux, macOS (both arches), and Windows: native runners, one
+  # PGO cycle per Ruby version, then one fat platform gem.
+  native:
+    name: Native ${{ matrix.platform }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux, os: ubuntu-latest }
+          - { platform: aarch64-linux, os: ubuntu-24.04-arm }
+          - { platform: arm64-darwin, os: macos-latest }
+          # Windows PGO runs on the windows-gnu target (the UCRT Ruby
+          # toolchain); rustc ships its profiler runtime there, but this
+          # is the least-traveled leg: if it misbehaves, drop the
+          # platform from the matrix rather than shipping non-PGO quietly.
+          - { platform: x64-mingw-ucrt, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - name: Add the GNU target for the UCRT Ruby toolchain
+        if: runner.os == 'Windows'
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: PGO build (Ruby 3.3)
+        shell: bash
+        run: bundle install && ./script/ci/pgo-build-stage.sh
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: PGO build (Ruby 3.4)
+        shell: bash
+        run: bundle install && ./script/ci/pgo-build-stage.sh
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: PGO build (Ruby 4.0)
+        shell: bash
+        run: bundle install && ./script/ci/pgo-build-stage.sh
+
+      - name: Assemble platform gem
+        shell: bash
+        run: bundle exec rake "gem:native[${{ matrix.platform }}]"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-${{ matrix.platform }}
+          path: pkg/*.gem
+
+  # musl Linux: no native runners exist, so each Ruby version builds and
+  # TRAINS inside a ruby:<v>-alpine container on a runner of the matching
+  # architecture; execution is native-speed, so the profile is honest.
+  musl:
+    name: Native ${{ matrix.platform }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: x86_64-linux-musl, os: ubuntu-latest }
+          - { platform: aarch64-linux-musl, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: PGO build in Alpine containers (one per Ruby)
+        run: |
+          for v in $RUBY_VERSIONS; do
+            docker run --rm -v "$PWD:/work" -w /work "ruby:${v}-alpine" \
+              sh script/ci/alpine-pgo-build.sh
+          done
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Assemble platform gem
+        run: bundle install && bundle exec rake "gem:native[${{ matrix.platform }}]"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gems-${{ matrix.platform }}
+          path: pkg/*.gem
+
+  # Smoke-test every precompiled gem on a matching platform, on the
+  # newest and oldest supported Ruby.
+  verify:
+    name: Verify ${{ matrix.platform }} (Ruby ${{ matrix.ruby }})
+    needs: [native, musl]
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.3", "3.4", "4.0"]
+        platform:
+          - x86_64-linux
+          - aarch64-linux
+          - arm64-darwin
+          - x64-mingw-ucrt
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+        include:
+          - { platform: x86_64-linux, runs_on: ubuntu-latest }
+          - { platform: aarch64-linux, runs_on: ubuntu-24.04-arm }
+          - { platform: arm64-darwin, runs_on: macos-latest }
+          - { platform: x64-mingw-ucrt, runs_on: windows-latest }
+          - {
+              platform: x86_64-linux-musl,
+              runs_on: ubuntu-latest,
+              docker: alpine,
+            }
+          - {
+              platform: aarch64-linux-musl,
+              runs_on: ubuntu-24.04-arm,
+              docker: alpine,
+            }
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: script/ci/smoke.rb
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gems-${{ matrix.platform }}
+          path: pkg
+
+      - uses: ruby/setup-ruby@v1
+        if: ${{ !matrix.docker }}
+        with:
+          ruby-version: ${{ matrix.ruby }}
+
+      - name: Smoke-test gem (native)
+        if: ${{ !matrix.docker }}
+        shell: bash
+        run: |
+          gem install pkg/*.gem
+          ruby script/ci/smoke.rb
+
+      - name: Smoke-test gem (alpine)
+        if: ${{ matrix.docker }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work "ruby:${{ matrix.ruby }}-alpine" \
+            sh -c 'gem install pkg/*.gem && ruby script/ci/smoke.rb'
+
+  # Publish: git tag + GitHub Release (atomic, gems attached, changelog
+  # section as notes) + RubyGems push via OIDC trusted publishing.
+  publish:
+    needs: [version, source, native, musl, verify]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gems-*
+          path: pkg
+          merge-multiple: true
+
+      - name: Extract changelog for this version
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          awk -v ver="$VERSION" '/^## /{f=($2==ver||index($0,"["ver"]")>0); next} /^\[.*\]: /{next} f{print}' \
+            CHANGELOG.md > /tmp/release_notes.md
+          cat /tmp/release_notes.md
+
+      - name: Create git tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.version.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "nosj ${{ needs.version.outputs.version }}" \
+            --notes-file /tmp/release_notes.md \
+            pkg/*.gem
+
+      - name: Configure RubyGems credentials
+        uses: rubygems/configure-rubygems-credentials@main
+
+      - name: Push gems to RubyGems
+        run: |
+          for gem in pkg/*.gem; do
+            echo "Pushing ${gem}"
+            gem push "${gem}"
+          done

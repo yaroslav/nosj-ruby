@@ -1,0 +1,10 @@
+--readme README.md
+--markup markdown
+--title "nosj"
+--output-dir doc
+--no-private
+--embed-mixins
+lib/**/*.rb
+-
+CHANGELOG.md
+LICENSE.txt
