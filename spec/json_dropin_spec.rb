@@ -103,6 +103,22 @@ RSpec.describe "require 'nosj/json' drop-in" do
     RUBY
   end
 
+  it "accepts the encodings the gem accepts (Rack bodies are BINARY)" do
+    expect_ok(<<~RUBY)
+      require "nosj/json"
+      body = '{"user":"ada","n":1.5}'.b
+      raise "binary" unless JSON.parse(body) == {"user" => "ada", "n" => 1.5}
+      utf16 = '{"a":1}'.encode(Encoding::UTF_16LE)
+      raise "utf16 fallback" unless JSON.parse(utf16) == JSON.nosj_original_parse(utf16)
+      begin
+        JSON.parse("\\xFF\\xFE{}".b)
+        raise "no error"
+      rescue JSON::ParserError
+      end
+      puts "ALL-OK"
+    RUBY
+  end
+
   it "provides a MultiJson adapter" do
     expect_ok(<<~RUBY)
       require "nosj/multi_json"

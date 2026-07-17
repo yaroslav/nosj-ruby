@@ -1,3 +1,23 @@
+## [Unreleased]
+
+- Rails mode: `require "nosj/rails"` accelerates a Rails application
+  in both directions. It installs a nosj-backed ActiveSupport JSON
+  encoder, so `obj.to_json`, `render json:`, and `ActiveSupport::JSON.encode` walk the object tree natively—values recurse through `as_json` exactly
+  like ActiveSupport's own encoder. It also loads the `nosj/json` drop-in, so
+  `ActiveSupport::JSON.decode` and JSON request-body parsing take the
+  fast path (including on Rails 7.x, whose `quirks_mode` option the
+  drop-in now accepts; the drop-in also accepts valid-UTF-8 BINARY
+  strings now, which is what Rack delivers request bodies as). The
+  HTML-safety escaping is fused into the SIMD string-emission kernels,
+  so escaped output costs the same single pass as unescaped. Measured
+  against stock ActiveSupport encoding: ×1.7 on small documents up to
+  ×5.2 on large trees and ×14 on HTML-heavy content
+  (`rake bench:rails`). In a Rails Gemfile:
+  `gem "nosj", require: "nosj/rails"`.
+- `JSON::Fragment` values now splice their pre-rendered JSON
+  everywhere the `json` gem does: in default mode, under `strict:
+  true`, and through the Rails encoder.
+
 ## [0.2.0] - 2026-07-16
 
 - File APIs. `NOSJ.load_file(path, opts)` parses a file directly

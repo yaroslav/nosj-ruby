@@ -13,6 +13,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 - It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
 - It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
 - It has **file APIs**: parse, generate, dig, and lazy-wrap files directly—no throwaway file-sized Ruby String, and the partial modes memory-map the file so unread pages never even leave the disk.
+- It accelerates a **Rails** application in both encoding and decoding.
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
 - Otherwise, same API and option names as gem json.
@@ -50,6 +51,8 @@ NOSJ.generate({"a" => [1, true]})  #=> '{"a":[1,true]}'
 
 That's it—if you know the `json` gem, you already know `nosj`.
 
+### gem json compatibility
+
 Want the speedup without touching your code? One line reroutes
 `JSON.parse`, `JSON.generate`, `JSON.pretty_generate`, and `JSON.dump`
 through nosj:
@@ -65,14 +68,33 @@ Gemfile you can do this:
 gem "nosj", require: "nosj/json"
 ```
 
-Options nosj supports take the fast path; anything exotic
-(`create_additions`, `object_class`, `JSON::State`, procs, IO
-arguments) falls back to the original implementation, so `JSON.load`,
-`JSON.parse!`, and `JSON.load_file` keep their exact behavior.
-Exceptions re-raise as the JSON classes, so your rescue clauses keep
-working. Measured through the patch: parse 1.11×, generate 1.05× over
-the original gem. (A MultiJson adapter ships too:
-`require "nosj/multi_json"`, then `MultiJson.use NOSJ::MultiJsonAdapter`.)
+A MultiJson adapter ships too: 
+
+```ruby
+require "nosj/multi_json"
+```
+
+And then `MultiJson.use NOSJ::MultiJsonAdapter`.
+
+### Ruby on Rails
+
+In a Rails app, use this for "Rails mode":
+
+```ruby
+gem "nosj", require: "nosj/rails"
+```
+
+That installs a nosj-backed ActiveSupport JSON encoder, so `obj.to_json`, `render json:`, and `ActiveSupport::JSON.encode` walk the object tree natively:
+values that aren't JSON-native recurse through `as_json` exactly like
+ActiveSupport's own encoder, non-finite floats encode as `null`, and
+HTML-safety escaping (`escape_html_entities_in_json`) behaves
+identically—verified differentially against ActiveSupport's encoder.
+It loads the drop-in too, so `ActiveSupport::JSON.decode` and JSON
+request-body parsing ride the fast path. 
+
+Measured against ActiveSupport's own encoder: ×1.9 on small documents
+up to ×5.2 on large trees and ×14 on HTML-heavy content—see
+[Benchmarks → Rails mode](#rails-mode).
 
 ## What's in the box
 
@@ -208,6 +230,27 @@ Silicon dev box, Ruby 4.0.6 + YJIT, PGO build, 2026-07-16):
 `File.write(NOSJ.generate(obj))` on this box—file-write timings swing
 too much for an honest multiplier; what it saves is the intermediate
 file-sized Ruby String.
+
+### Rails mode
+
+`ActiveSupport::JSON.encode` with the nosj encoder installed, against
+stock ActiveSupport (Apple Silicon dev box, Ruby 4.0.6 + YJIT,
+activesupport 8.1, medians of 5 interleaved per-process rounds,
+outputs verified byte-identical first, 2026-07-17;
+`rake bench:rails`):
+
+| workload | nosj (i/s) | vs ActiveSupport |
+|---|---:|---|
+| twitter tree (570 KB) | 4.5k | ×5.2 |
+| 100-record index (with timestamps) | 33.7k | ×1.7 |
+| HTML-heavy user content | 177.7k | ×14.2 |
+| Time/Date/BigDecimal hash | 1.1M | ×3.0 |
+| small API hash | 4.2M | ×1.9 |
+| small hash `to_json` | 4.1M | ×1.9 |
+
+The HTML-safety escaping that dominates stock encodes of
+user-generated content is fused into the SIMD string-emission kernels
+here: escaped output costs the same single pass as unescaped.
 
 Reproduce with `rake bench` (the parity-gated comparison, after a PGO retrain—the shipping configuration) or `rake bench:ips` (the multi-gem shoot-out).
 

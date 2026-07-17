@@ -16,6 +16,11 @@ pub(super) struct GenConfig {
     pub(super) start_depth: usize,
     pub(super) allow_nan: bool,
     pub(super) strict: bool,
+    /// ActiveSupport walk semantics: non-native values recurse through
+    /// as_json instead of splicing to_json, and non-finite floats emit
+    /// null (Float#as_json parity). Set only by the Rails entry, never
+    /// from user option hashes.
+    pub(super) rails: bool,
     pub(super) mode: EscapeMode,
     /// Precomputed "any formatting string set": scanning the five
     /// vectors per call was measurable on tiny documents.
@@ -37,6 +42,78 @@ pub(super) static DEFAULT_CONFIG: GenConfig = GenConfig {
     start_depth: 0,
     allow_nan: false,
     strict: false,
+    rails: false,
+    mode: EscapeMode::Standard,
+    pretty: false,
+};
+
+/// The Rails-encoder configuration for ActiveSupport's default escape
+/// flags (HTML entities and JS separators both on, the overwhelmingly
+/// common case): escaping is fused into the crate's HtmlSafe kernels,
+/// one pass, no post-scan.
+pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = GenConfig {
+    indent: Vec::new(),
+    space: Vec::new(),
+    space_before: Vec::new(),
+    object_nl: Vec::new(),
+    array_nl: Vec::new(),
+    max_nesting: 100,
+    start_depth: 0,
+    allow_nan: false,
+    strict: false,
+    rails: true,
+    mode: EscapeMode::HtmlSafe,
+    pretty: false,
+};
+
+/// Rails-encoder configuration with HTML entities on and JS separators
+/// off.
+pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = GenConfig {
+    indent: Vec::new(),
+    space: Vec::new(),
+    space_before: Vec::new(),
+    object_nl: Vec::new(),
+    array_nl: Vec::new(),
+    max_nesting: 100,
+    start_depth: 0,
+    allow_nan: false,
+    strict: false,
+    rails: true,
+    mode: EscapeMode::HtmlEntities,
+    pretty: false,
+};
+
+/// Rails-encoder configuration with JS separators on and HTML entities
+/// off.
+pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = GenConfig {
+    indent: Vec::new(),
+    space: Vec::new(),
+    space_before: Vec::new(),
+    object_nl: Vec::new(),
+    array_nl: Vec::new(),
+    max_nesting: 100,
+    start_depth: 0,
+    allow_nan: false,
+    strict: false,
+    rails: true,
+    mode: EscapeMode::JsSeparators,
+    pretty: false,
+};
+
+/// The Rails-encoder configuration with every escape flag off
+/// (encode(escape: false)). Mirrors JSONGemEncoder#stringify, which
+/// generates with the json gem's defaults.
+pub(super) static RAILS_CONFIG: GenConfig = GenConfig {
+    indent: Vec::new(),
+    space: Vec::new(),
+    space_before: Vec::new(),
+    object_nl: Vec::new(),
+    array_nl: Vec::new(),
+    max_nesting: 100,
+    start_depth: 0,
+    allow_nan: false,
+    strict: false,
+    rails: true,
     mode: EscapeMode::Standard,
     pretty: false,
 };
@@ -53,6 +130,7 @@ impl Default for GenConfig {
             start_depth: 0,
             allow_nan: false,
             strict: false,
+            rails: false,
             mode: EscapeMode::Standard,
             pretty: false,
         }
