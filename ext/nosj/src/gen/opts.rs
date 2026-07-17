@@ -5,7 +5,7 @@ use magnus::value::ReprValue;
 use magnus::{Error, RHash, RString, Ruby, Value};
 use nosj::emit::EscapeMode;
 
-pub(super) struct GenConfig {
+pub(crate) struct GenConfig {
     pub(super) indent: Vec<u8>,
     pub(super) space: Vec<u8>,
     pub(super) space_before: Vec<u8>,
@@ -32,7 +32,7 @@ pub(super) struct GenConfig {
 /// on tiny documents (the json gem likewise reuses a cached State for
 /// the default options). Safe as a static: `Vec::new` is const and
 /// allocation-free, and generation only ever borrows the config.
-pub(super) static DEFAULT_CONFIG: GenConfig = GenConfig {
+pub(crate) static DEFAULT_CONFIG: GenConfig = GenConfig {
     indent: Vec::new(),
     space: Vec::new(),
     space_before: Vec::new(),
@@ -164,7 +164,7 @@ fn opt_bool(ruby: &Ruby, opts: RHash, name: &str) -> Option<bool> {
 
 /// Decode a non-nil options hash (nil takes [`DEFAULT_CONFIG`] at the
 /// call site without constructing anything).
-pub(super) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usize), Error> {
+pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usize), Error> {
     let mut cfg = GenConfig::default();
     let mut cap_hint = 0usize;
     if opts.is_nil() {

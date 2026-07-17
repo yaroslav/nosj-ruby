@@ -46,6 +46,11 @@ module NOSJ
   class NestingError < Error
   end
 
+  # RFC 6902 application failures (failed test, missing target, index
+  # out of range, move into own child).
+  class PatchError < Error
+  end
+
   def self.parse: (String source, ?opts opts) -> value
 
   def self.generate: (untyped obj, ?opts opts) -> String
@@ -69,6 +74,16 @@ module NOSJ
   def self.at_pointers: (String source, Array[String] pointers, ?opts opts) -> Array[value]
 
   def self.lazy: (String source, ?opts opts) -> (Lazy | value)
+
+  # Byte-splicing edits: JSON Pointer => replacement value, resolved
+  # in one pass; bytes outside the target spans are copied untouched.
+  def self.splice: (String json, Hash[String, untyped] edits, ?opts opts) -> String
+
+  # RFC 6902 JSON Patch over the raw document.
+  def self.patch: (String json, Array[Hash[untyped, untyped]] ops, ?opts opts) -> String
+
+  # RFC 7386 JSON Merge Patch (semantic: parse, merge, generate).
+  def self.merge_patch: (String json, untyped patch, ?opts opts) -> String
 
   # NDJSON / JSON Lines: one parsed value per non-blank line.
   def self.each_line: (String source, ?opts opts) { (value) -> void } -> nil

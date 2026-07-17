@@ -13,6 +13,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 - It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
 - It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
 - It has **file APIs**: parse, generate, dig, and lazy-wrap files directly—no throwaway file-sized Ruby String, and the partial modes memory-map the file so unread pages never even leave the disk.
+- It does **byte-splicing edits**: `NOSJ.splice` changes a field inside a passing payload 10–51× faster than parse-mutate-generate, and RFC 6902 JSON Patch / RFC 7386 merge patch apply straight to the raw string.
 - It is **great to debug with**: parse errors carry line, column, and a caret snippet pointing at the break, and `NOSJ.stats` X-rays a mystery blob (depth, value counts, key histogram) faster than parsing it.
 - It accelerates a **Rails** application in both encoding and decoding.
 - It comes **precompiled** (platform gems built with per-platform optimizations,
@@ -167,6 +168,39 @@ The partial and lazy forms memory-map the file, so pages you never
 read are never loaded from disk. Missing files raise the usual
 `Errno` exceptions. Measured numbers live in
 [Benchmarks → File APIs](#file-apis).
+
+### Byte-splicing edits and JSON Patch
+
+Change a field in a passing payload without the parse → mutate →
+generate cycle: `NOSJ.splice` skips to the target spans (one pass for
+the whole batch) and rebuilds the string around them—every byte
+outside the targets is copied untouched, so formatting, key order,
+and number spellings survive exactly. On twitter.json this is
+**10×–51× faster** than parse-mutate-generate (129µs for a late
+field, 26µs for an early one, vs ~1.3ms):
+
+```ruby
+NOSJ.splice(json, "/config/timeout" => 30)
+NOSJ.splice(json, "/a" => 1, "/b/c" => [true])   # batch, one pass
+```
+
+On top of the same machinery: **RFC 6902 JSON Patch** applied to the
+raw string (`add`, `remove`, `replace`, `move`, `copy`, `test`—the
+whole appendix-A suite is in the specs), and **RFC 7386 JSON Merge
+Patch**:
+
+```ruby
+NOSJ.patch(json, [
+  {"op" => "test", "path" => "/a", "value" => 1},
+  {"op" => "replace", "path" => "/a", "value" => 2},
+  {"op" => "add", "path" => "/list/-", "value" => "x"}
+])
+NOSJ.merge_patch(json, {"config" => {"legacy" => nil, "timeout" => 30}})
+```
+
+Missing splice targets raise `KeyError` (use `patch` `add` to
+insert); failed patches raise `NOSJ::PatchError`; inserted values are
+byte-identical to `NOSJ.generate`'s output.
 
 ### NDJSON / JSON Lines
 

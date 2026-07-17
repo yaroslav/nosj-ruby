@@ -23,7 +23,7 @@
 mod errors;
 mod hash_iter;
 mod keys;
-mod opts;
+pub(crate) mod opts;
 mod ruby;
 mod walker;
 
@@ -247,6 +247,21 @@ fn emit_one(
             "generation failed without error detail",
         )),
     }
+}
+
+/// Emit one value into `out` under `cfg`, borrowing the pooled key
+/// cache. The splice/patch entries use this to generate replacement
+/// values straight into their output buffer.
+pub(crate) fn emit_into(
+    ruby: &Ruby,
+    obj: Value,
+    cfg: &opts::GenConfig,
+    out: &mut Vec<u8>,
+) -> Result<(), Error> {
+    GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut scratch) => emit_one(ruby, obj, cfg, out, &mut scratch.keys),
+        Err(_) => emit_one(ruby, obj, cfg, out, &mut GenKeyCache::default()),
+    })
 }
 
 /// Formatting strings holding a newline (or carriage return) would

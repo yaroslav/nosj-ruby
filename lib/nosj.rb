@@ -71,6 +71,13 @@ module NOSJ
   # Message-compatible with +JSON::NestingError+.
   class NestingError < Error; end
 
+  # Raised when an RFC 6902 patch cannot be applied: a +test+ operation
+  # failed, a target or source path does not exist, an array index is
+  # out of range, or a +move+ targets its own child. Structurally
+  # malformed patch documents (not an op Hash, unknown op, missing
+  # fields) raise ArgumentError instead.
+  class PatchError < Error; end
+
   PRETTY_GENERATE_OPTS = {
     indent: "  ", space: " ", object_nl: "\n", array_nl: "\n"
   }.freeze
@@ -311,6 +318,93 @@ module NOSJ
   def self.dig_file(path, *path_elements)
     dig_file_native(path, path_elements)
   end
+
+  # Byte-splicing edits: replaces the values at the given JSON Pointers
+  # directly in the text. Every target resolves in ONE forward pass
+  # (skipping, not parsing), and the result is built in one sweep:
+  # every byte outside the target spans is copied untouched, so
+  # formatting, key order, and number spellings elsewhere are preserved
+  # exactly. For tweaking a field in a passing payload this replaces
+  # the whole parse → mutate → generate cycle.
+  #
+  # @example
+  #   NOSJ.splice(json, "/config/timeout" => 30)
+  #   NOSJ.splice(json, "/a" => 1, "/b/c" => [true])   # batch, one pass
+  #
+  # @param json [String] the document (UTF-8 or US-ASCII)
+  # @param edits [Hash{String => Object}] JSON Pointer => replacement
+  #   value (generated compactly, byte-identical to {.generate})
+  # @param opts [Hash, nil] {.generate} options for the inserted values
+  # @return [String] the edited document
+  # @raise [KeyError] when a pointer does not resolve (splice replaces;
+  #   use {.patch} +add+ to insert)
+  # @raise [ArgumentError] for malformed pointers or overlapping targets
+  # @raise [ParserError] when the document is malformed
+  def self.splice(json, edits, opts = nil)
+    splice_native(json, edits, opts)
+  end
+
+  # Applies an RFC 6902 JSON Patch to the raw document: +add+,
+  # +remove+, +replace+, +move+, +copy+, and +test+, applied
+  # sequentially, each as a byte-splice (structural ops walk only the
+  # parent container's span). Op hashes accept String or Symbol keys.
+  #
+  # @example
+  #   NOSJ.patch(json, [
+  #     {"op" => "test", "path" => "/a", "value" => 1},
+  #     {"op" => "replace", "path" => "/a", "value" => 2},
+  #     {"op" => "add", "path" => "/list/-", "value" => "x"},
+  #     {"op" => "move", "from" => "/tmp", "path" => "/kept"}
+  #   ])
+  #
+  # @param json [String] the document (UTF-8 or US-ASCII)
+  # @param ops [Array<Hash>] RFC 6902 operations
+  # @param opts [Hash, nil] {.generate} options for inserted values
+  # @return [String] the patched document
+  # @raise [PatchError] when application fails (failed +test+, missing
+  #   target, index out of range, move into own child)
+  # @raise [ArgumentError] for structurally malformed patch documents
+  # @raise [ParserError] when the document is malformed
+  def self.patch(json, ops, opts = nil)
+    patch_native(json, ops, opts)
+  end
+
+  # Applies an RFC 7386 JSON Merge Patch: +nil+ values remove keys,
+  # nested Hashes merge recursively, everything else replaces. This is
+  # the semantic form (parse, merge, generate); Symbol keys in +patch+
+  # match String keys in the document.
+  #
+  # @example
+  #   NOSJ.merge_patch(%({"a":{"b":1,"c":2}}), {a: {b: nil, d: 3}})
+  #   #=> '{"a":{"c":2,"d":3}}'
+  #
+  # @param json [String] the document (UTF-8 or US-ASCII)
+  # @param patch [Object] the merge patch (a non-Hash replaces the
+  #   whole document)
+  # @param opts [Hash, nil] {.generate} options for the result
+  # @return [String] the merged document
+  # @raise [ParserError] when the document is malformed
+  def self.merge_patch(json, patch, opts = nil)
+    return generate(patch, opts) unless patch.is_a?(Hash)
+    generate(merge_patch_value(parse(json), patch), opts)
+  end
+
+  # RFC 7386, applied to parsed values.
+  def self.merge_patch_value(target, patch)
+    return patch unless patch.is_a?(Hash)
+    target = {} unless target.is_a?(Hash)
+    out = target.dup
+    patch.each do |key, value|
+      key = key.to_s
+      if value.nil?
+        out.delete(key)
+      else
+        out[key] = merge_patch_value(out[key], value)
+      end
+    end
+    out
+  end
+  private_class_method :merge_patch_value
 
   # NDJSON / JSON Lines: yields one parsed value per line of +source+.
   # Framing is exact because a raw newline can never occur inside a

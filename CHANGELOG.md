@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+- Byte-splicing edits and JSON Patch. `NOSJ.splice(json, pointer =>
+  value, ...)` replaces values directly in the text: every target
+  resolves in one forward pass and the result is rebuilt copying all
+  bytes outside the target spans untouched (formatting, key order, and
+  number spellings elsewhere survive exactly). Measured on
+  twitter.json: 10× faster than parse-mutate-generate for a late
+  field, 51× for an early one. Missing targets raise KeyError,
+  overlapping targets ArgumentError. `NOSJ.patch(json, ops)` applies
+  RFC 6902 JSON Patch (add/remove/replace/move/copy/test, String or
+  Symbol op keys) to the raw string the same way, with structural ops
+  walking only the parent container's span; application failures raise
+  the new `NOSJ::PatchError`, malformed patch documents ArgumentError.
+  `NOSJ.merge_patch(json, patch)` applies RFC 7386 JSON Merge Patch
+  (semantic form). Inserted values are byte-identical to
+  `NOSJ.generate` and accept its options; the RFC 6902 appendix-A
+  suite and the full RFC 7386 test table are in the specs.
 - NDJSON / JSON Lines. `NOSJ.each_line(source, opts)` yields one
   parsed value per line (Enumerator without a block, so
   `.first(10)`/`.lazy` walk only what they consume), skipping blank
