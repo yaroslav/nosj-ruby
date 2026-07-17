@@ -428,7 +428,7 @@ pub fn splice_native(
     finish_string(&out)
 }
 
-fn finish_string(bytes: &[u8]) -> Result<RString, Error> {
+pub(crate) fn finish_string(bytes: &[u8]) -> Result<RString, Error> {
     use magnus::rb_sys::FromRawValue;
     Ok(unsafe {
         RString::from_value(Value::from_raw(rb_sys::rb_utf8_str_new(

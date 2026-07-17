@@ -319,6 +319,77 @@ module NOSJ
     dig_file_native(path, path_elements)
   end
 
+  # Minifies a document without building any Ruby values: the parser's
+  # events pipe straight into the emission kernels, SIMD in and SIMD
+  # out. Output is exactly what <code>generate(parse(json))</code>
+  # would produce, except duplicate object keys pass through instead of
+  # being collapsed (a reformatter must not silently drop data).
+  # Numbers come out in the canonical spelling (+1.50+ becomes +1.5+)
+  # and string escapes are normalized.
+  #
+  # @example
+  #   NOSJ.minify(%({ "a": [1, 2],\n  "b": "x" }))  #=> '{"a":[1,2],"b":"x"}'
+  #
+  # @param json [String] the document (UTF-8 or US-ASCII)
+  # @param opts [Hash, nil] acceptance options (+allow_nan+,
+  #   +allow_trailing_comma+, +max_nesting+); trailing commas are
+  #   normalized away when accepted
+  # @return [String] the minified document
+  # @raise [ParserError] when the document is malformed
+  # @raise [NestingError] past +max_nesting+
+  def self.minify(json, opts = nil)
+    reformat_native(json, opts)
+  end
+
+  # Reformats a document without building any Ruby values: {.minify}'s
+  # pipe with formatting. <code>pretty: true</code> is a shorthand for
+  # {.pretty_generate}'s layout; the individual {.generate} formatting
+  # and escape options (+indent+, +space+, +object_nl+, +ascii_only+,
+  # +script_safe+, ...) compose with it and win over it.
+  #
+  # @example
+  #   NOSJ.reformat(json, pretty: true)
+  #   NOSJ.reformat(json, ascii_only: true)   # escape-transcode, compact
+  #
+  # @param json [String] the document (UTF-8 or US-ASCII)
+  # @param opts [Hash, nil] +pretty+, {.generate} formatting/escape
+  #   options, and {.minify}'s acceptance options
+  # @return [String] the reformatted document
+  # @raise [ParserError] when the document is malformed
+  # @raise [NestingError] past +max_nesting+
+  # @raise [GeneratorError] when +ascii_only+ meets a lone-surrogate
+  #   string it cannot represent
+  def self.reformat(json, opts = nil)
+    if opts&.key?(:pretty)
+      pretty = opts[:pretty]
+      opts = opts.except(:pretty)
+      opts = PRETTY_GENERATE_OPTS.merge(opts) if pretty
+    end
+    reformat_native(json, opts)
+  end
+
+  # {.reformat} against a file: the pipe runs over a read-only memory
+  # map, so the input document never becomes a Ruby String; only the
+  # result does.
+  #
+  # @example
+  #   compact = NOSJ.reformat_file("big.json")            # minify
+  #   pretty  = NOSJ.reformat_file("big.json", pretty: true)
+  #
+  # @param path [String] the file to reformat (UTF-8)
+  # @param opts [Hash, nil] same options as {.reformat}
+  # @return [String] the reformatted document
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends
+  # @raise [ParserError] when the file is malformed or not UTF-8
+  def self.reformat_file(path, opts = nil)
+    if opts&.key?(:pretty)
+      pretty = opts[:pretty]
+      opts = opts.except(:pretty)
+      opts = PRETTY_GENERATE_OPTS.merge(opts) if pretty
+    end
+    reformat_file_native(path, opts)
+  end
+
   # Byte-splicing edits: replaces the values at the given JSON Pointers
   # directly in the text. Every target resolves in ONE forward pass
   # (skipping, not parsing), and the result is built in one sweep:

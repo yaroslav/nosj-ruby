@@ -22,6 +22,12 @@ pub(crate) enum SinkAbort {
     Overflow,
     BadBigint,
     TooDeep,
+    /// The reformat pipe met a WTF-8 (lone-surrogate) object KEY,
+    /// which the Writer has no pre-serialized escape hatch for; gem
+    /// parity is the GeneratorError `generate` raises on the
+    /// equivalent broken-coderange string. (String VALUES re-escape
+    /// as \uXXXX instead.)
+    BrokenUtf8Output,
 }
 
 /// `RB_INT2FIX` ported from Ruby's public inline headers: fixnums are

@@ -6,11 +6,11 @@ use magnus::{Error, RHash, RString, Ruby, Value};
 use nosj::emit::EscapeMode;
 
 pub(crate) struct GenConfig {
-    pub(super) indent: Vec<u8>,
-    pub(super) space: Vec<u8>,
-    pub(super) space_before: Vec<u8>,
-    pub(super) object_nl: Vec<u8>,
-    pub(super) array_nl: Vec<u8>,
+    pub(crate) indent: Vec<u8>,
+    pub(crate) space: Vec<u8>,
+    pub(crate) space_before: Vec<u8>,
+    pub(crate) object_nl: Vec<u8>,
+    pub(crate) array_nl: Vec<u8>,
     /// 0 = unlimited.
     pub(super) max_nesting: usize,
     pub(super) start_depth: usize,
@@ -21,7 +21,7 @@ pub(crate) struct GenConfig {
     /// null (Float#as_json parity). Set only by the Rails entry, never
     /// from user option hashes.
     pub(super) rails: bool,
-    pub(super) mode: EscapeMode,
+    pub(crate) mode: EscapeMode,
     /// Precomputed "any formatting string set": scanning the five
     /// vectors per call was measurable on tiny documents.
     pub(super) pretty: bool,

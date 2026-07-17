@@ -26,6 +26,7 @@ pub mod lines;
 pub mod parse;
 pub mod patch;
 pub mod pointer;
+pub mod reformat;
 pub mod sink;
 pub mod state;
 pub mod stats;
@@ -77,6 +78,11 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("write_lines_native", method!(files::write_lines_native, 3))?;
     module.define_singleton_method("splice_native", method!(patch::splice_native, 3))?;
     module.define_singleton_method("patch_native", method!(patch::patch_native, 3))?;
+    module.define_singleton_method("reformat_native", method!(reformat::reformat_native, 2))?;
+    module.define_singleton_method(
+        "reformat_file_native",
+        method!(reformat::reformat_file_native, 2),
+    )?;
     let lazy_class = module.define_class("Lazy", ruby.class_object())?;
     // Nodes are only born from NOSJ.lazy / lazy resolution.
     lazy_class.undef_default_alloc_func();

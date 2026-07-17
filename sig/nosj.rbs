@@ -75,6 +75,15 @@ module NOSJ
 
   def self.lazy: (String source, ?opts opts) -> (Lazy | value)
 
+  # Reformat without building values: parser events pipe straight into
+  # the emission kernels. minify is compact; reformat takes pretty: and
+  # the generate formatting/escape options.
+  def self.minify: (String json, ?opts opts) -> String
+
+  def self.reformat: (String json, ?opts opts) -> String
+
+  def self.reformat_file: (String path, ?opts opts) -> String
+
   # Byte-splicing edits: JSON Pointer => replacement value, resolved
   # in one pass; bytes outside the target spans are copied untouched.
   def self.splice: (String json, Hash[String, untyped] edits, ?opts opts) -> String

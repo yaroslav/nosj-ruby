@@ -20,7 +20,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 nothing to compile on install).
 - Otherwise, same API and option names as gem json.
 
-**And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, stream NDJSON / JSON Lines in both directions, and accelerate an entire application with a one-line drop-in.
+**And there's more**: validate documents without building a single Ruby object, minify and pretty-print without parsing, resolve whole batches of paths in one pass, stream NDJSON / JSON Lines in both directions, and accelerate an entire application with a one-line drop-in.
 
 - [Requirements](#requirements)
 - [Getting started](#getting-started)
@@ -168,6 +168,28 @@ The partial and lazy forms memory-map the file, so pages you never
 read are never loaded from disk. Missing files raise the usual
 `Errno` exceptions. Measured numbers live in
 [Benchmarks → File APIs](#file-apis).
+
+### Reformat without parsing
+
+`NOSJ.minify` and `NOSJ.reformat` pipe the parser's events straight
+into the emission kernels: **zero Ruby objects** are built for the
+document (the specs assert it), SIMD in and SIMD out. Minifying the
+631 KB twitter.json takes 409µs—3.4× faster than a
+`generate(parse(x))` round-trip, 3.9× faster than gem json's cycle,
+and only 1.4× the cost of `valid?`:
+
+```ruby
+NOSJ.minify(json)                        # compact
+NOSJ.reformat(json, pretty: true)        # pretty_generate layout
+NOSJ.reformat(json, ascii_only: true)    # escape-transcode, no parse
+NOSJ.reformat_file("big.json")           # straight off a memory map
+```
+
+Output is exactly `generate(parse(json))`—canonical number spellings,
+normalized escapes, same formatting options—except duplicate keys pass
+through (a reformatter must not silently drop data) and lone-surrogate
+strings re-escape instead of raising. Acceptance options apply too:
+`minify(src, allow_trailing_comma: true)` normalizes the commas away.
 
 ### Byte-splicing edits and JSON Patch
 

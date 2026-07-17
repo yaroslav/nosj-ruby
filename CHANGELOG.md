@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+- Reformat without parsing. `NOSJ.minify(json, opts)` and
+  `NOSJ.reformat(json, opts)` (plus `NOSJ.reformat_file`) pipe the
+  parser's events straight into the emission kernels: zero Ruby
+  objects are allocated for the document, and output is exactly
+  `generate(parse(json))`—canonical numbers, normalized escapes, the
+  full set of `generate` formatting and escape options, with
+  `pretty: true` as a `pretty_generate` shorthand—except duplicate
+  object keys pass through and lone-surrogate string values re-escape
+  as `\uXXXX` instead of raising (the output must always reparse).
+  Acceptance options apply per `parse` (`allow_trailing_comma`
+  normalizes the commas away). Measured on the 631 KB twitter.json:
+  409µs, 3.4× faster than `NOSJ.generate(NOSJ.parse(x))`, 3.9× faster
+  than gem json's cycle, 5.3× faster than Oj's, and 1.4× the cost of
+  `NOSJ.valid?`.
 - Byte-splicing edits and JSON Patch. `NOSJ.splice(json, pointer =>
   value, ...)` replaces values directly in the text: every target
   resolves in one forward pass and the result is rebuilt copying all

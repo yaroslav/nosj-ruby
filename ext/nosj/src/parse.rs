@@ -141,6 +141,12 @@ fn finish_drive(
             ruby,
             format!("nesting of {} is too deep", max_nesting.saturating_add(1)),
         )),
+        // Raised only by the reformat pipe's sink, which never drives
+        // through here; the match must stay total.
+        Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(parser_error(
+            ruby,
+            "source sequence is illegal/malformed utf-8".into(),
+        )),
         Err(nosj::DriveError::Parse(e)) => Err(parser_error_at(
             ruby,
             source,
