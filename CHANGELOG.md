@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.3.0] - 2026-07-17
 
 - Reformat without parsing. `NOSJ.minify(json, opts)` and
   `NOSJ.reformat(json, opts)` (plus `NOSJ.reformat_file`) pipe the
