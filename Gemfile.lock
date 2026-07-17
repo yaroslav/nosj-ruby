@@ -61,11 +61,25 @@ GEM
       crass (~> 1.0.2)
       nokogiri (>= 1.12.0)
     memory_profiler (1.1.0)
+    mini_portile2 (2.8.9)
     minitest (6.0.6)
       drb (~> 2.0)
       prism (~> 1.5)
     multi_json (1.21.1)
+    nokogiri (1.19.4)
+      mini_portile2 (~> 2.8.2)
+      racc (~> 1.4)
+    nokogiri (1.19.4-aarch64-linux-gnu)
+      racc (~> 1.4)
+    nokogiri (1.19.4-aarch64-linux-musl)
+      racc (~> 1.4)
     nokogiri (1.19.4-arm64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.19.4-x64-mingw-ucrt)
+      racc (~> 1.4)
+    nokogiri (1.19.4-x86_64-linux-gnu)
+      racc (~> 1.4)
+    nokogiri (1.19.4-x86_64-linux-musl)
       racc (~> 1.4)
     oj (3.17.3)
       bigdecimal (>= 3.0)
@@ -160,8 +174,14 @@ GEM
     yard (0.9.45)
 
 PLATFORMS
+  aarch64-linux
+  aarch64-linux-musl
   arm64-darwin-24
   arm64-darwin-25
+  ruby
+  x64-mingw-ucrt
+  x86_64-linux
+  x86_64-linux-musl
 
 DEPENDENCIES
   actionpack

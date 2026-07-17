@@ -102,20 +102,26 @@ RSpec.describe "require 'nosj/rails'" do
     RUBY
   end
 
-  it "splices JSON::Fragment like ActiveSupport does" do
+  it "splices JSON::Fragment (matching ActiveSupport wherever it splices)" do
     expect_ok(<<~'RUBY')
       require "active_support"
       require "active_support/json"
       require "json"
 
+      spliced = '{"cached":{"pre":"rendered"}}'
       value = {"cached" => JSON::Fragment.new('{"pre":"rendered"}')}
       stock = ActiveSupport::JSON.encode(value)
 
       require "nosj/rails"
 
       mine = ActiveSupport::JSON.encode(value)
-      raise "fragment mismatch: #{stock.inspect} vs #{mine.inspect}" unless stock == mine
-      raise "not spliced" unless mine == '{"cached":{"pre":"rendered"}}'
+      raise "not spliced: #{mine.inspect}" unless mine == spliced
+      # Older ActiveSupport predates fragments and dumps the ivars
+      # instead; the deliberate divergence there is documented in
+      # nosj/rails. Where stock splices, outputs must match exactly.
+      if stock == spliced || !stock.include?("json")
+        raise "fragment mismatch: #{stock.inspect} vs #{mine.inspect}" unless stock == mine
+      end
       puts "ALL-OK"
     RUBY
   end

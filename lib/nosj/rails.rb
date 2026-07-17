@@ -19,8 +19,11 @@
 #
 #   gem "nosj", require: "nosj/rails"
 #
-# Known divergence: +JSON::Fragment+ values raise instead of splicing
-# raw JSON (fragments are unsupported gem-wide).
+# +JSON::Fragment+ values splice their pre-rendered JSON, like current
+# ActiveSupport. On older ActiveSupport (before its encoder learned
+# about fragments) stock encoding dumps the fragment's instance
+# variables instead; there this encoder deliberately diverges in favor
+# of real splicing.
 
 require "nosj/json"
 require "active_support"
