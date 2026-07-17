@@ -101,6 +101,16 @@ module NOSJ
     alias to_s inspect
   end
 
+  # Defined by `require "nosj/rails"`, which also installs it as
+  # ActiveSupport::JSON::Encoding.json_encoder.
+  class RailsEncoder
+    attr_reader options: Hash[Symbol, untyped]
+
+    def initialize: (?Hash[Symbol, untyped]? options) -> void
+
+    def encode: (untyped value) -> String
+  end
+
   # Defined by `require "nosj/multi_json"`. The runtime superclass is
   # multi_json's Adapter (whose namespace differs across multi_json
   # versions), so it is not declared here.

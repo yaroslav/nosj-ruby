@@ -39,3 +39,42 @@ jobs:
 
       - name: Run specs
         run: bundle exec rake spec
+
+  # The Rails-facing specs against the oldest supported ActiveSupport
+  # lines (the main matrix already exercises the newest release): the
+  # drop-in's quirks_mode path and the encoder seam differ across them.
+  rails-compat:
+    name: Rails compat (activesupport ${{ matrix.activesupport }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { activesupport: "~> 7.1.0", ruby: "3.3" }
+          - { activesupport: "~> 7.2.0", ruby: "3.4" }
+          - { activesupport: "~> 8.0.0", ruby: "3.4" }
+          - { activesupport: "~> 8.1.0", ruby: "4.0" }
+    env:
+      NOSJ_ACTIVESUPPORT_VERSION: ${{ matrix.activesupport }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Ruby & Rust
+        uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          cargo-cache: true
+
+      # The committed lockfile resolves the newest ActiveSupport; the
+      # pin needs a fresh resolution.
+      - name: Bundle with the pinned ActiveSupport
+        run: |
+          rm Gemfile.lock
+          bundle install
+
+      - name: Compile native extension
+        run: bundle exec rake compile
+
+      - name: Run the Rails-facing specs
+        run: bundle exec rspec spec/rails_spec.rb spec/rails_integration_spec.rb spec/json_dropin_spec.rb

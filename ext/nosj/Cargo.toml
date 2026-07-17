@@ -25,4 +25,4 @@ memmap2 = "0.9"
 # First-party SIMD JSON parse/generate library (github.com/yaroslav/nosj).
 # For coordinated crate+gem work, temporarily flip to
 # { path = "../../../nosj" } and restore before any commit or release.
-nosj = "0.1.1"
+nosj = "0.2.0"

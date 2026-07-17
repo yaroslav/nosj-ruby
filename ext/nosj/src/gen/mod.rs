@@ -46,12 +46,17 @@ use walker::Gen;
 struct GenScratch {
     buf: Vec<u8>,
     keys: GenKeyCache,
+    /// Keys pre-escaped under HtmlSafe (the Rails encoder): cached
+    /// bytes bake in the escape mode, so each cacheable mode owns a
+    /// cache (see walker::mode_cacheable).
+    html_keys: GenKeyCache,
 }
 
 thread_local! {
     static GEN_SCRATCH: RefCell<GenScratch> = RefCell::new(GenScratch {
         buf: Vec::new(),
         keys: GenKeyCache::with_capacity(256),
+        html_keys: GenKeyCache::with_capacity(64),
     });
 }
 
@@ -84,6 +89,29 @@ pub fn generate_entry(ruby: &Ruby, _rb_self: Value, args: &[Value]) -> Result<RS
         }
     };
     generate_scratched(ruby, obj, cfg, cap_hint)
+}
+
+/// `NOSJ.generate_rails_native(obj, escape_html, escape_js)`: compact
+/// generation under ActiveSupport walk semantics (non-native values
+/// recurse through as_json, non-finite floats emit null). Every escape
+/// flag combination maps to a crate escape mode, so HTML/JS-safety
+/// escaping is always fused into the emission kernels: one pass, no
+/// post-processing. The Rails encoder installed by
+/// `require "nosj/rails"` is the only caller.
+pub fn generate_rails_native(
+    ruby: &Ruby,
+    _rb_self: Value,
+    obj: Value,
+    escape_html: bool,
+    escape_js: bool,
+) -> Result<RString, Error> {
+    let cfg = match (escape_html, escape_js) {
+        (true, true) => &opts::RAILS_HTML_SAFE_CONFIG,
+        (true, false) => &opts::RAILS_HTML_ENTITIES_CONFIG,
+        (false, true) => &opts::RAILS_JS_SEPARATORS_CONFIG,
+        (false, false) => &opts::RAILS_CONFIG,
+    };
+    generate_scratched(ruby, obj, cfg, 0)
 }
 
 /// `NOSJ.generate_native(obj, opts)`: the fixed-arity entry kept for
@@ -149,15 +177,18 @@ fn generate_scratched_into<R>(
     GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
         Ok(mut scratch) => {
             let scratch = &mut *scratch;
-            generate_with(
-                ruby,
-                obj,
-                cfg,
-                cap_hint,
-                &mut scratch.buf,
-                &mut scratch.keys,
-                finish,
-            )
+            let GenScratch {
+                buf,
+                keys,
+                html_keys,
+                ..
+            } = scratch;
+            let keys = if cfg.mode == nosj::emit::EscapeMode::HtmlSafe {
+                html_keys
+            } else {
+                keys
+            };
+            generate_with(ruby, obj, cfg, cap_hint, buf, keys, finish)
         }
         Err(_) => {
             let mut buf = Vec::new();

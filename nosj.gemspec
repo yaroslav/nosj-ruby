@@ -15,8 +15,9 @@ Gem::Specification.new do |spec|
     "with per-platform PGO, partial parsing (JSON Pointer, single and batch), " \
     "lazy documents that parse a value only when you touch it, file APIs that " \
     "parse, generate, and query files natively (memory-mapped, so unread pages " \
-    "never leave the disk), allocation-free validation, and a one-line JSON " \
-    "module drop-in."
+    "never leave the disk), allocation-free validation, a one-line JSON " \
+    "module drop-in, and a Rails mode that plugs into ActiveSupport's " \
+    "encoder seam."
   spec.homepage = "https://github.com/yaroslav/nosj-ruby"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3.0"

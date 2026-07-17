@@ -6,7 +6,7 @@
 #
 # reroutes JSON.parse, JSON.generate, JSON.pretty_generate and JSON.dump
 # through NOSJ whenever the requested options fall within NOSJ's
-# supported set, and falls back to the original json implementation for
+# supported set, and falls back to gem json's own implementation for
 # everything else (create_additions, object_class/array_class,
 # decimal_class, on_load procs, JSON::State instances, IO arguments).
 # Entry points built on JSON.parse (JSON.load, JSON.parse!,
@@ -30,8 +30,11 @@ module NOSJ
   # Implementation detail of `require "nosj/json"`.
   # @private
   module JSONDropIn
+    # quirks_mode rides the fast path because NOSJ.parse is always
+    # quirks-mode (top-level scalars parse) and ignores the key; Rails
+    # 7.x passes it from ActiveSupport::JSON.decode.
     PARSE_OPTS = %i[symbolize_names freeze max_nesting allow_nan
-      allow_trailing_comma].freeze
+      allow_trailing_comma quirks_mode].freeze
     GENERATE_OPTS = %i[indent space space_before object_nl array_nl
       max_nesting allow_nan ascii_only script_safe
       escape_slash strict depth
@@ -41,7 +44,7 @@ module NOSJ
 
     # The fast path handles nil or a plain Hash whose every key NOSJ
     # implements; anything else (JSON::State, exotic options, string
-    # keys) belongs to the original implementation.
+    # keys) belongs to gem json.
     def supported?(opts, allowed)
       return true if opts.nil?
       return false unless opts.instance_of?(Hash)
@@ -50,6 +53,25 @@ module NOSJ
     end
 
     def parse(source, opts)
+      # NOSJ.parse is deliberately strict about encodings (json-3.0
+      # semantics), but the drop-in must match the installed gem, which
+      # accepts more. BINARY strings holding valid UTF-8 are the big
+      # real-world case: Rack delivers request bodies as BINARY, so
+      # Rails JSON params come through here. Retagging a dup is cheap
+      # (copy-on-write bytes), and the validity scan is memoized
+      # coderange the parse would compute anyway. Anything else
+      # non-UTF-8 (UTF-16, ...) belongs to gem json, which transcodes.
+      if source.is_a?(String)
+        case source.encoding
+        when Encoding::UTF_8, Encoding::US_ASCII
+        # the fast path as-is
+        when Encoding::BINARY
+          utf8 = source.dup.force_encoding(Encoding::UTF_8)
+          source = utf8 if utf8.valid_encoding?
+        else
+          return ::JSON.nosj_original_parse(source, **(opts || {}))
+        end
+      end
       NOSJ.parse(source, opts)
     rescue RuntimeError => e
       raise ::JSON::ParserError, e.message
@@ -103,9 +125,9 @@ module JSON
 
       def dump(obj, an_io = nil, limit = nil, kwargs = nil)
         # Fast path for the common shapes, dump(obj) and dump(obj, opts
-        # hash), mirroring the gem: dump defaults merged under the
+        # hash), mirroring gem json: dump defaults merged under the
         # user's options, NestingError surfaced as ArgumentError. IO and
-        # limit arguments take the original implementation.
+        # limit arguments take gem json's own dump.
         if limit.nil? && kwargs.nil? && (an_io.nil? || an_io.instance_of?(Hash))
           opts = _dump_default_options
           opts = opts.merge(an_io) if an_io

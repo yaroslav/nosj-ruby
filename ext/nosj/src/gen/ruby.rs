@@ -23,6 +23,57 @@ pub(super) fn protected_to_json(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, to_json_id(), 0) })
 }
 
+/// `v.as_json`, protected. Argument-less on purpose: ActiveSupport's
+/// JSONGemEncoder#jsonify recursion also calls as_json without
+/// options (only the top-level value receives them).
+pub(super) fn protected_as_json(v: VALUE) -> Result<VALUE, Error> {
+    magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, as_json_id(), 0) })
+}
+
+/// Interned `as_json` method ID, resolved once per process.
+fn as_json_id() -> rb_sys::ID {
+    static AS_JSON: OnceLock<usize> = OnceLock::new();
+    *AS_JSON.get_or_init(|| unsafe { rb_sys::rb_intern(c"as_json".as_ptr()) } as usize)
+        as rb_sys::ID
+}
+
+/// Whether `v` is a `JSON::Fragment` (pre-rendered JSON to splice
+/// verbatim: the gem accepts fragments even under `strict`, and
+/// ActiveSupport's encoder passes them through). The class is resolved
+/// lazily and cached only on success, so a json gem loaded after the
+/// first generate is still found; a fragment instance existing implies
+/// its class does. The cached VALUE is a constant of the JSON module,
+/// so it can never be collected.
+pub(super) fn is_json_fragment(v: VALUE) -> bool {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FRAGMENT: AtomicUsize = AtomicUsize::new(0);
+    let mut cls = FRAGMENT.load(Ordering::Relaxed);
+    if cls == 0 {
+        cls = resolve_json_fragment();
+        if cls == 0 {
+            return false;
+        }
+        FRAGMENT.store(cls, Ordering::Relaxed);
+    }
+    unsafe { rb_sys::rb_obj_is_kind_of(v, cls as VALUE) != QFALSE }
+}
+
+fn resolve_json_fragment() -> usize {
+    unsafe {
+        let object = rb_sys::rb_cObject;
+        let json_id = rb_sys::rb_intern(c"JSON".as_ptr());
+        if rb_sys::rb_const_defined(object, json_id) == 0 {
+            return 0;
+        }
+        let json = rb_sys::rb_const_get(object, json_id);
+        let fragment_id = rb_sys::rb_intern(c"Fragment".as_ptr());
+        if rb_sys::rb_const_defined(json, fragment_id) == 0 {
+            return 0;
+        }
+        rb_sys::rb_const_get(json, fragment_id) as usize
+    }
+}
+
 /// Encode `v` to UTF-8, protected. `rb_str_encode` raises on
 /// undefined/invalid conversions, matching the gem, which wraps that
 /// exception as GeneratorError (`rb_str_export_to_enc` is lenient and

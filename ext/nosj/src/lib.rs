@@ -70,6 +70,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     lazy_class.define_method("__size", method!(lazy::lazy_size, 0))?;
     lazy_class.define_method("__children", method!(lazy::lazy_children, 0))?;
     module.define_singleton_method("generate_native", method!(gen::generate_native, 2))?;
+    module.define_singleton_method(
+        "generate_rails_native",
+        method!(gen::generate_rails_native, 3),
+    )?;
     // `generate` itself is native and variadic: the json gem routes
     // its `generate` through a Ruby frame into C, so skipping our own
     // forwarder frame is a straight per-call win on small documents.

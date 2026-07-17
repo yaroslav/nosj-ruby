@@ -65,6 +65,11 @@ namespace :bench do
   task :ips, [:file] => :compile do |_t, args|
     ruby(*["benchmark/benchmark.rb", args[:file], *args.extras].compact)
   end
+
+  desc "Rails-mode encoder shoot-out (stock/Oj/nosj) on benchmark-ips"
+  task rails: :compile do
+    ruby("benchmark/rails_benchmark.rb")
+  end
 end
 
 def bench_sweep(args)

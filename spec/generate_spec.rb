@@ -93,4 +93,12 @@ RSpec.describe "NOSJ.generate" do
       expect(NOSJ.parse(NOSJ.generate(obj))).to eq(obj), "round-trip mismatch: #{File.basename(f)}"
     end
   end
+
+  it "splices JSON::Fragment like the gem, in default and strict modes" do
+    value = {"cached" => JSON::Fragment.new('{"pre":"rendered"}')}
+    expect_gem_parity(value)
+    expect(NOSJ.generate(value, strict: true))
+      .to eq(JSON.generate(value, strict: true))
+    expect(NOSJ.generate(value)).to eq('{"cached":{"pre":"rendered"}}')
+  end
 end

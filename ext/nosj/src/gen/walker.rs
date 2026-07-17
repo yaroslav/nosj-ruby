@@ -3,7 +3,7 @@
 //! Compact and pretty modes are one const-generic body, so the compact
 //! hot path carries no formatting branches.
 
-use nosj::emit::{self, EscapeMode};
+use nosj::emit::{self, copy_short_raw, EscapeMode};
 use rb_sys::macros::{
     FIX2LONG, FIXNUM_P, FLONUM_P, RARRAY_CONST_PTR, RARRAY_LEN, RB_BUILTIN_TYPE, RHASH_SIZE,
     STATIC_SYM_P,
@@ -14,52 +14,16 @@ use super::errors::GenFail;
 use super::keys::GenKeyCache;
 use super::opts::GenConfig;
 use super::ruby::{
-    is_special_const, protected_encode_utf8, protected_to_json, protected_to_s, rstring_bytes,
-    str_coderange, str_enc_index, to_json_id, utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL,
-    QTRUE,
+    is_json_fragment, is_special_const, protected_as_json, protected_encode_utf8,
+    protected_to_json, protected_to_s, rstring_bytes, str_coderange, str_enc_index, to_json_id,
+    utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL, QTRUE,
 };
 
-/// Overlapping-word copy for short runs through a raw pointer (the
-/// crate's `copy_small` shape, local because that helper is
-/// crate-internal): a size-laddered pair of unaligned loads/stores
-/// instead of a libc memmove call, whose per-call overhead measured
-/// 42% on tiny-copy-heavy generation. Cached keys over 32 bytes are
-/// rare enough for the memcpy fallback.
-///
-/// # Safety
-///
-/// `n` readable bytes at `src`, `n` writable bytes at `dst`, and the
-/// ranges must not overlap.
-#[inline(always)]
-unsafe fn copy_short_raw(src: *const u8, dst: *mut u8, n: usize) {
-    /// One overlapping pair: word-size chunks at offset 0 and at
-    /// `n - size` cover `size..=2*size` bytes; the overlapped middle
-    /// is written twice with identical data.
-    macro_rules! word_pair {
-        ($t:ty) => {{
-            const SIZE: usize = size_of::<$t>();
-            dst.cast::<$t>()
-                .write_unaligned(src.cast::<$t>().read_unaligned());
-            dst.add(n - SIZE)
-                .cast::<$t>()
-                .write_unaligned(src.add(n - SIZE).cast::<$t>().read_unaligned());
-        }};
-    }
-    if n >= 16 {
-        if n <= 32 {
-            word_pair!(u128);
-        } else {
-            std::ptr::copy_nonoverlapping(src, dst, n);
-        }
-    } else if n >= 8 {
-        word_pair!(u64);
-    } else if n >= 4 {
-        word_pair!(u32);
-    } else if n >= 2 {
-        word_pair!(u16);
-    } else if n == 1 {
-        *dst = *src;
-    }
+/// Whether keys escaped under `mode` may be cached: the cached bytes
+/// bake in the escape mode, so the scratch keeps one cache per
+/// cacheable mode and hands `Gen` the matching one.
+pub(super) fn mode_cacheable(mode: EscapeMode) -> bool {
+    matches!(mode, EscapeMode::Standard | EscapeMode::HtmlSafe)
 }
 
 pub(super) struct Gen<'a> {
@@ -69,6 +33,7 @@ pub(super) struct Gen<'a> {
     pub(super) fail: Option<GenFail>,
     /// Pre-escaped key cache, borrowed for the whole document (one
     /// thread-local borrow per generate call instead of one per key).
+    /// Always the cache matching `cfg.mode` (see [`mode_cacheable`]).
     pub(super) keys: &'a mut GenKeyCache,
 }
 
@@ -149,6 +114,11 @@ impl Gen<'_> {
             emit::write_f64(&mut *self.out, f);
             return Ok(());
         }
+        if self.cfg.rails {
+            // ActiveSupport's Float#as_json: non-finite floats are null.
+            self.out.extend_from_slice(b"null");
+            return Ok(());
+        }
         let name = if f.is_nan() {
             "NaN"
         } else if f > 0.0 {
@@ -166,13 +136,14 @@ impl Gen<'_> {
     }
 
     /// Emit an object key from the pre-escaped cache. Only frozen string
-    /// keys in Standard escape mode are cacheable: frozen guarantees the
-    /// content behind the VALUE can't change, and the cached bytes bake in
-    /// the escape mode.
+    /// keys in a cacheable escape mode qualify: frozen guarantees the
+    /// content behind the VALUE can't change, and the cached bytes bake
+    /// in the escape mode, so each cacheable mode gets its own cache
+    /// instance from the scratch (see [`mode_cacheable`]).
     fn emit_key_cached(&mut self, k: VALUE) -> Result<(), ()> {
         const FL_FREEZE: u64 = rb_sys::ruby_fl_type::RUBY_FL_FREEZE as u64;
         let frozen = unsafe { (*(k as *const rb_sys::RBasic)).flags } & FL_FREEZE != 0;
-        if !frozen || self.cfg.mode != EscapeMode::Standard {
+        if !frozen || !mode_cacheable(self.cfg.mode) {
             return self.emit_rstring_quoted(k);
         }
         if let Some(bytes) = self.keys.get(k) {
@@ -190,13 +161,13 @@ impl Gen<'_> {
     }
 
     /// The pre-escaped bytes for `k` when the cache may serve it:
-    /// frozen string key, Standard escape mode (see [`Gen::emit_key_cached`]
-    /// for why only that combination is cacheable). An associated fn
-    /// over the split-out fields so callers keep `self.out` free.
+    /// frozen string key, cacheable escape mode (see
+    /// [`Gen::emit_key_cached`]). An associated fn over the split-out
+    /// fields so callers keep `self.out` free.
     #[inline(always)]
     fn cached_key_bytes<'k>(cfg: &GenConfig, keys: &'k GenKeyCache, k: VALUE) -> Option<&'k [u8]> {
         const FL_FREEZE: u64 = rb_sys::ruby_fl_type::RUBY_FL_FREEZE as u64;
-        if cfg.mode == EscapeMode::Standard
+        if mode_cacheable(cfg.mode)
             && !is_special_const(k)
             && unsafe { RB_BUILTIN_TYPE(k) } == ruby_value_type::RUBY_T_STRING
             && unsafe { (*(k as *const rb_sys::RBasic)).flags } & FL_FREEZE != 0
@@ -303,11 +274,20 @@ impl Gen<'_> {
         }
     }
 
-    /// Non-native type: strict raises; otherwise `to_json` if the object
-    /// responds (result appended verbatim), else `to_s` as a JSON string,
-    /// which is exactly what the gem's `Object#to_json` does.
-    fn emit_fallback(&mut self, raw: VALUE) -> Result<(), ()> {
+    /// Non-native type: strict raises (except `JSON::Fragment`, which
+    /// the gem splices even under strict); otherwise `to_json` if the
+    /// object responds (result appended verbatim), else `to_s` as a
+    /// JSON string, which is exactly what the gem's `Object#to_json`
+    /// does. Rails mode recurses through `as_json` instead
+    /// (JSONGemEncoder#jsonify).
+    fn emit_fallback<const PRETTY: bool>(&mut self, raw: VALUE, depth: usize) -> Result<(), ()> {
+        if self.cfg.rails {
+            return self.emit_rails_fallback::<PRETTY>(raw, depth);
+        }
         if self.cfg.strict {
+            if is_json_fragment(raw) {
+                return self.splice_to_json(raw);
+            }
             let name = unsafe {
                 std::ffi::CStr::from_ptr(rb_sys::rb_obj_classname(raw))
                     .to_string_lossy()
@@ -334,6 +314,64 @@ impl Gen<'_> {
         }
         match protected_to_s(raw) {
             Ok(s) => self.emit_rstring_quoted(s),
+            Err(exc) => {
+                self.fail = Some(GenFail::Reraise(exc));
+                Err(())
+            }
+        }
+    }
+
+    /// Splice `raw`'s `to_json` result verbatim: the JSON::Fragment
+    /// path (pre-rendered JSON, trusted like the gem trusts it).
+    fn splice_to_json(&mut self, raw: VALUE) -> Result<(), ()> {
+        match protected_to_json(raw) {
+            Ok(json)
+                if !is_special_const(json)
+                    && unsafe { RB_BUILTIN_TYPE(json) } == ruby_value_type::RUBY_T_STRING =>
+            {
+                self.append_rstring_raw(json);
+                Ok(())
+            }
+            Ok(_) => {
+                self.fail = Some(GenFail::Generator(
+                    "JSON::Fragment#to_json did not return a String".to_string(),
+                ));
+                Err(())
+            }
+            Err(exc) => {
+                self.fail = Some(GenFail::Reraise(exc));
+                Err(())
+            }
+        }
+    }
+
+    /// Rails-mode fallback, mirroring JSONGemEncoder#jsonify:
+    /// fragments splice through (like ActiveSupport passes them to the
+    /// gem); everything else is asked for its as_json representation
+    /// (no arguments; only the top-level value receives the encoder
+    /// options), which is emitted in its place. An as_json returning
+    /// the receiver would recurse forever, so it raises instead.
+    fn emit_rails_fallback<const PRETTY: bool>(
+        &mut self,
+        raw: VALUE,
+        depth: usize,
+    ) -> Result<(), ()> {
+        if is_json_fragment(raw) {
+            return self.splice_to_json(raw);
+        }
+        match protected_as_json(raw) {
+            Ok(json) if json == raw => {
+                let name = unsafe {
+                    std::ffi::CStr::from_ptr(rb_sys::rb_obj_classname(raw))
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                self.fail = Some(GenFail::Generator(format!(
+                    "{name}#as_json returned the receiver"
+                )));
+                Err(())
+            }
+            Ok(json) => self.emit_value::<PRETTY>(json, depth),
             Err(exc) => {
                 self.fail = Some(GenFail::Reraise(exc));
                 Err(())
@@ -601,7 +639,7 @@ impl Gen<'_> {
                     let s = unsafe { rb_sys::rb_sym2str(raw) };
                     self.emit_rstring_quoted(s)
                 }
-                _ => self.emit_fallback(raw),
+                _ => self.emit_fallback::<PRETTY>(raw, depth),
             };
         }
         if FIXNUM_P(raw) {
@@ -633,6 +671,6 @@ impl Gen<'_> {
             let s = unsafe { rb_sys::rb_sym2str(raw) };
             return self.emit_rstring_quoted(s);
         }
-        self.emit_fallback(raw)
+        self.emit_fallback::<PRETTY>(raw, depth)
     }
 }
