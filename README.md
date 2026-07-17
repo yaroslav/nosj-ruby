@@ -13,6 +13,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 - It has **lazy documents**: `NOSJ.lazy` wraps a document and parses a value only when you touch it—repeated access costs nanoseconds, and everything you never read is never parsed.
 - It has a **partial parsing mode**: JSON Pointer lookups that pull single values out of big documents in microseconds, skipping everything else.
 - It has **file APIs**: parse, generate, dig, and lazy-wrap files directly—no throwaway file-sized Ruby String, and the partial modes memory-map the file so unread pages never even leave the disk.
+- It is **great to debug with**: parse errors carry line, column, and a caret snippet pointing at the break, and `NOSJ.stats` X-rays a mystery blob (depth, value counts, key histogram) faster than parsing it.
 - It accelerates a **Rails** application in both encoding and decoding.
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
