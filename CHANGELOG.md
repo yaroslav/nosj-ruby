@@ -1,3 +1,27 @@
+## [Unreleased]
+
+- Fixed: `NOSJ.minify` / `NOSJ.reformat` produced unparseable output
+  for a float that overflows to Infinity—a huge-exponent literal like
+  `1e999`, or a ~300-digit integer with an exponent (such literals
+  parse to Infinity even in strict mode, matching the `json` gem).
+  The pipe emitted a bare `Infinity` token; it now raises the same
+  `GeneratorError` that `generate` would
+  (`"Infinity not allowed in JSON"`). With `allow_nan: true` the
+  literal still passes through as `Infinity`. Found by fuzzing.
+- Fixed (second manifestation, also found by fuzzing): the same
+  unparseable output could appear with the overflowing literal hidden
+  behind a duplicate object key. Because the reformat pipe
+  deliberately preserves duplicate-key entries, it now refuses such
+  documents with the same `GeneratorError` even though
+  `generate(parse(x))` succeeds there (last-key-wins parsing discards
+  the shadowed value)—a documented divergence.
+- Differential fuzzing for the native extension (`ext/nosj/fuzz`):
+  three cargo-fuzz targets—reformat, NDJSON framing, and
+  byte-splicing/JSON Patch—each drive the real entry points on an
+  embedded Ruby VM and compare every input against pure-Ruby
+  reference implementations, with committed seed corpora and a weekly
+  CI workflow (`fuzz.yml`).
+
 ## [0.3.0] - 2026-07-17
 
 - Reformat without parsing. `NOSJ.minify(json, opts)` and

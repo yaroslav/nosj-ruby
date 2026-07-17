@@ -1,0 +1,56 @@
+name: Fuzz
+
+# Differential fuzzing of the extension's byte-manipulation layers
+# (reformat pipe, NDJSON framing, splice/patch span arithmetic) against
+# pure-Ruby reference implementations on an embedded VM. Weekly on a
+# schedule, or on demand with a chosen duration. See
+# ext/nosj/fuzz/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes per target"
+        default: "15"
+  schedule:
+    - cron: "43 5 * * 1" # Mondays 05:43 UTC
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [reformat, lines, patch]
+    defaults:
+      run:
+        working-directory: ext/nosj
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # Sanitizers stay off (-s none): Ruby's conservative GC stack
+      # scanning and ASan disagree, and the parser crate's own fuzzers
+      # keep the sanitizer coverage. --target is explicit because the
+      # prebuilt cargo-fuzz binary is a static musl build and would
+      # otherwise default to the musl triple.
+      - run: >
+          mkdir -p fuzz/corpus/${{ matrix.target }} &&
+          cargo fuzz run ${{ matrix.target }}
+          fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
+          -s none --target x86_64-unknown-linux-gnu --
+          -max_total_time=$(( 60 * ${{ github.event.inputs.minutes || 15 }} ))
+          -rss_limit_mb=8192
+        env:
+          RUST_BACKTRACE: "1"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: ext/nosj/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

@@ -28,6 +28,11 @@ pub(crate) enum SinkAbort {
     /// equivalent broken-coderange string. (String VALUES re-escape
     /// as \uXXXX instead.)
     BrokenUtf8Output,
+    /// The reformat pipe met a non-finite float without `allow_nan`.
+    /// Parsing accepts huge-exponent literals like 1e999 as Infinity
+    /// even in strict mode (gem parity), but generation refuses them;
+    /// carries the JSON spelling for the gem-exact error message.
+    NonFiniteFloat(&'static str),
 }
 
 /// `RB_INT2FIX` ported from Ruby's public inline headers: fixnums are

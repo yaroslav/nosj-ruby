@@ -1,0 +1,3 @@
+# Seed corpora are byte-exact fixtures (deliberate \r, NUL separators,
+# WTF-8): no EOL conversion, no diffs.
+seeds/** -text

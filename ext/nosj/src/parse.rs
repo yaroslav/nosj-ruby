@@ -147,6 +147,11 @@ fn finish_drive(
             ruby,
             "source sequence is illegal/malformed utf-8".into(),
         )),
+        // Also reformat-pipe-only, kept total for the same reason.
+        Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(parser_error(
+            ruby,
+            format!("{spelling} not allowed in JSON"),
+        )),
         Err(nosj::DriveError::Parse(e)) => Err(parser_error_at(
             ruby,
             source,

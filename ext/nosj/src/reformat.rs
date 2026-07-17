@@ -44,6 +44,9 @@ struct PipeSink<'a> {
     max_nesting: usize,
     /// For re-escaping WTF-8 string content (see [`quote_wtf8`]).
     mode: EscapeMode,
+    /// Non-finite floats pass through as literals only when the
+    /// generate side allows them; see [`PipeSink::float`].
+    allow_nan: bool,
 }
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -127,17 +130,28 @@ impl nosj::Sink for PipeSink<'_> {
     fn float(&mut self, value: f64) -> Result<(), SinkAbort> {
         if value.is_finite() {
             self.w.float(value);
-        } else {
-            // Reached only when the parse accepted them (allow_nan);
-            // the gem's literals go straight through.
-            self.w.value_raw(if value.is_nan() {
-                b"NaN"
-            } else if value > 0.0 {
-                b"Infinity"
-            } else {
-                b"-Infinity"
-            });
+            return Ok(());
         }
+        let spelling = if value.is_nan() {
+            "NaN"
+        } else if value > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        };
+        // Not just the allow_nan keywords: a huge-exponent literal
+        // (1e999) parses to Infinity in strict mode too, and generate
+        // refuses to emit it. Gem parity either way. The parser only
+        // delivers the f64, never the original digits, so passing the
+        // source spelling through is not an option. One asymmetry
+        // follows: the pipe streams duplicate-key entries that
+        // parse's last-key-wins would discard, so a document with an
+        // overflowing literal shadowed by a duplicate key raises here
+        // even though generate(parse(x)) would succeed.
+        if !self.allow_nan {
+            return Err(SinkAbort::NonFiniteFloat(spelling));
+        }
+        self.w.value_raw(spelling.as_bytes());
         Ok(())
     }
 
@@ -238,6 +252,7 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<RString, Erro
             depth: 0,
             max_nesting: po.max_nesting,
             mode: gcfg.mode,
+            allow_nan: gcfg.allow_nan,
         };
         let result = PULL_STATE.with(|state_cell| {
             let mut state = state_cell.borrow_mut();
@@ -258,6 +273,10 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<RString, Erro
                 // string ascii_only cannot represent.
                 nosj_exception(ruby, "GeneratorError"),
                 "source sequence is illegal/malformed utf-8",
+            )),
+            Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(Error::new(
+                nosj_exception(ruby, "GeneratorError"),
+                format!("{spelling} not allowed in JSON"),
             )),
             Err(nosj::DriveError::Sink(_)) => {
                 Err(parser_error(ruby, "reformat pass aborted".into()))

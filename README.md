@@ -434,6 +434,11 @@ bundle exec rake bench:fast             # the sweep without retraining
 bundle exec rake "bench:ips[twitter]"   # multi-gem shoot-out (benchmark-ips); no args = full corpus
 ```
 
+The native layer is differentially fuzzed on an embedded VM
+(reformat pipe, NDJSON framing, splice/patch span arithmetic against
+pure-Ruby reference implementations)—see
+[ext/nosj/fuzz/README.md](ext/nosj/fuzz/README.md).
+
 ## Acknowledgements
 
 Thanks to [Jean Boussier](https://github.com/byroot), [Florian Frank](https://github.com/flori), [Hiroshi Shibata](https://github.com/hsbt), [Nobuyoshi Nakada](https://github.com/nobu), [Étienne Barrié](https://github.com/etiennebarrie), and the other authors and maintainers of the [json gem](https://github.com/ruby/json)—for their work on the gem itself, for optimization ideas, and for some of the JSON documents in the benchmark corpus.

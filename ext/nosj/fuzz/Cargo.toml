@@ -1,0 +1,41 @@
+[package]
+name = "nosj-ruby-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Must match the extension's own magnus line so cargo unifies the
+# rb-sys link (one libruby, one VM).
+magnus = { git = "https://github.com/matsadler/magnus", features = ["embed", "rb-sys"] }
+# The extension as an rlib; its lib target is named `nosj` (the bundle
+# name), so rename the dependency to keep fuzz code readable.
+nosj_ext = { path = "..", package = "nosj_native" }
+
+# Prevent this from being interpreted as part of a parent workspace.
+[workspace]
+
+[[bin]]
+name = "reformat"
+path = "fuzz_targets/reformat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lines"
+path = "fuzz_targets/lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patch"
+path = "fuzz_targets/patch.rs"
+test = false
+doc = false
+bench = false

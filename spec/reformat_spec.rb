@@ -51,6 +51,24 @@ RSpec.describe "NOSJ.minify / NOSJ.reformat" do
     expect(NOSJ.minify(deep, max_nesting: false)).to eq(deep)
   end
 
+  it "refuses overflow-to-Infinity floats like generate (fuzz find)" do
+    # 1e999 parses to Infinity even in strict mode (gem parity), so a
+    # bare literal from the pipe would not reparse.
+    expect { NOSJ.minify("[1e999]") }
+      .to raise_error(NOSJ::GeneratorError, "Infinity not allowed in JSON")
+    expect { NOSJ.minify("[-1e999]") }
+      .to raise_error(NOSJ::GeneratorError, "-Infinity not allowed in JSON")
+    expect(NOSJ.minify("[1e999]", allow_nan: true)).to eq("[Infinity]")
+    expect(NOSJ.generate(NOSJ.parse("[1e999]"), allow_nan: true)).to eq("[Infinity]")
+    # The pipe streams duplicate-key entries parse would discard, so an
+    # overflowing literal shadowed by a duplicate still refuses even
+    # though generate(parse(x)) succeeds (fuzz find).
+    shadowed = %({"b": [1e999], "b": 1})
+    expect(NOSJ.generate(NOSJ.parse(shadowed))).to eq(%({"b":1}))
+    expect { NOSJ.minify(shadowed) }
+      .to raise_error(NOSJ::GeneratorError, "Infinity not allowed in JSON")
+  end
+
   it "composes pretty with explicit formatting overrides" do
     src = %({"a":[1]})
     expect(NOSJ.reformat(src, pretty: true, indent: "\t"))

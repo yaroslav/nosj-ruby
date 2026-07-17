@@ -14,7 +14,7 @@ pub(crate) struct GenConfig {
     /// 0 = unlimited.
     pub(super) max_nesting: usize,
     pub(super) start_depth: usize,
-    pub(super) allow_nan: bool,
+    pub(crate) allow_nan: bool,
     pub(super) strict: bool,
     /// ActiveSupport walk semantics: non-native values recurse through
     /// as_json instead of splicing to_json, and non-finite floats emit
