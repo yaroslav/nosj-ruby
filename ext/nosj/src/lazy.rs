@@ -17,7 +17,8 @@ use magnus::typed_data::Obj;
 use magnus::value::ReprValue;
 use magnus::{DataTypeFunctions, Error, RArray, RString, Ruby, TypedData, Value};
 
-use crate::parse::{err, materialize, parse_native_opts, utf8_input, ParseNativeOpts};
+use crate::errors::parser_error_at;
+use crate::parse::{materialize_at, parse_native_opts, span_of, utf8_input, ParseNativeOpts};
 use crate::pointer::{path_to_pointer, push_escaped_token};
 use crate::state::PULL_STATE;
 
@@ -105,20 +106,19 @@ impl LazyNode {
 /// Wrap a resolved raw-value slice: containers become new lazy nodes,
 /// scalars materialize now. `sub` must be a subslice of `doc.bytes`.
 fn resolved_to_value(ruby: &Ruby, doc: &Arc<DocInner>, sub: &[u8]) -> Result<Value, Error> {
+    let (start, end) = span_of(doc.bytes(), sub);
     match sub.first().copied() {
         Some(k) if k == KIND_OBJECT || k == KIND_ARRAY => {
-            let base = doc.bytes().as_ptr() as usize;
-            let start = sub.as_ptr() as usize - base;
             let node = LazyNode {
                 doc: Arc::clone(doc),
                 start,
-                end: start + sub.len(),
+                end,
                 kind: k,
             };
             let obj: Obj<LazyNode> = ruby.obj_wrap(node);
             Ok(obj.as_value())
         }
-        _ => materialize(ruby, sub, &doc.opts),
+        _ => materialize_at(ruby, doc.bytes(), start, end, &doc.opts),
     }
 }
 
@@ -139,7 +139,7 @@ fn resolve_in_span(ruby: &Ruby, node: &LazyNode, pointer: &str) -> Result<Value,
         Err(e) if matches!(e.kind, nosj::ErrorKind::InvalidPointer) => {
             Err(Error::new(ruby.exception_arg_error(), e.to_string()))
         }
-        Err(e) => Err(err(ruby, e.to_string())),
+        Err(e) => Err(reader_err(ruby, node, e)),
     }
 }
 
@@ -188,7 +188,12 @@ pub(crate) fn wrap_root(
     let doc = Arc::new(DocInner { bytes, opts });
     let input = doc.bytes();
     let Some(start) = input.iter().position(|b| !WS.contains(b)) else {
-        return Err(err(ruby, "unexpected end of input".into()));
+        return Err(parser_error_at(
+            ruby,
+            input,
+            input.len(),
+            "unexpected end of input".into(),
+        ));
     };
     let end = input.iter().rposition(|b| !WS.contains(b)).unwrap() + 1;
     let sub = &doc.bytes()[start..end];
@@ -245,7 +250,13 @@ pub fn lazy_at_pointer(
 /// `__materialize`: the whole span as plain Ruby values, under the
 /// document's parse options.
 pub fn lazy_materialize(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<Value, Error> {
-    materialize(ruby, rb_self.span(), &rb_self.doc.opts)
+    materialize_at(
+        ruby,
+        rb_self.doc.bytes(),
+        rb_self.start,
+        rb_self.end,
+        &rb_self.doc.opts,
+    )
 }
 
 /// `__kind`: `:object` or `:array`.
@@ -261,8 +272,11 @@ pub fn lazy_byte_size(_ruby: &Ruby, rb_self: Obj<LazyNode>) -> usize {
     rb_self.end - rb_self.start
 }
 
-fn reader_err(ruby: &Ruby, e: nosj::ParseError) -> Error {
-    err(ruby, e.to_string())
+/// A walk failure inside `node`'s span: the reader's offset is
+/// span-relative, so shift by the node's start to report an absolute
+/// document position.
+fn reader_err(ruby: &Ruby, node: &LazyNode, e: nosj::ParseError) -> Error {
+    parser_error_at(ruby, node.doc.bytes(), node.start + e.offset, e.to_string())
 }
 
 /// `__keys`: the object's decoded keys, one Reader walk, values skipped.
@@ -278,8 +292,11 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
         let mut state = cell.borrow_mut();
         // SAFETY: spans are valid UTF-8 (see resolve_in_span).
         let mut r = unsafe { nosj::Reader::from_utf8_unchecked(rb_self.span(), &mut state.bufs) };
-        r.next_node().map_err(|e| reader_err(ruby, e))?;
-        let mut has = match r.object_first_key().map_err(|e| reader_err(ruby, e))? {
+        r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
+        let mut has = match r
+            .object_first_key()
+            .map_err(|e| reader_err(ruby, &rb_self, e))?
+        {
             Some(k) => {
                 out.push(ruby.str_new(k))?;
                 true
@@ -287,8 +304,11 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
             None => false,
         };
         while has {
-            r.skip_value().map_err(|e| reader_err(ruby, e))?;
-            has = match r.object_next_key().map_err(|e| reader_err(ruby, e))? {
+            r.skip_value().map_err(|e| reader_err(ruby, &rb_self, e))?;
+            has = match r
+                .object_next_key()
+                .map_err(|e| reader_err(ruby, &rb_self, e))?
+            {
                 Some(k) => {
                     out.push(ruby.str_new(k))?;
                     true
@@ -308,27 +328,27 @@ pub fn lazy_size(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<usize, Error> {
         let mut state = cell.borrow_mut();
         // SAFETY: spans are valid UTF-8 (see resolve_in_span).
         let mut r = unsafe { nosj::Reader::from_utf8_unchecked(rb_self.span(), &mut state.bufs) };
-        r.next_node().map_err(|e| reader_err(ruby, e))?;
+        r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut n = 0usize;
         if rb_self.kind == KIND_OBJECT {
             let mut has = r
                 .object_first_key()
-                .map_err(|e| reader_err(ruby, e))?
+                .map_err(|e| reader_err(ruby, &rb_self, e))?
                 .is_some();
             while has {
                 n += 1;
-                r.skip_value().map_err(|e| reader_err(ruby, e))?;
+                r.skip_value().map_err(|e| reader_err(ruby, &rb_self, e))?;
                 has = r
                     .object_next_key()
-                    .map_err(|e| reader_err(ruby, e))?
+                    .map_err(|e| reader_err(ruby, &rb_self, e))?
                     .is_some();
             }
         } else {
-            let mut has = r.array_first().map_err(|e| reader_err(ruby, e))?;
+            let mut has = r.array_first().map_err(|e| reader_err(ruby, &rb_self, e))?;
             while has {
                 n += 1;
-                r.skip_value().map_err(|e| reader_err(ruby, e))?;
-                has = r.array_next().map_err(|e| reader_err(ruby, e))?;
+                r.skip_value().map_err(|e| reader_err(ruby, &rb_self, e))?;
+                has = r.array_next().map_err(|e| reader_err(ruby, &rb_self, e))?;
             }
         }
         Ok(n)
@@ -383,7 +403,7 @@ pub fn lazy_children(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Erro
         }
         Ok(out)
     });
-    let descs = descs.map_err(|e| reader_err(ruby, e))?;
+    let descs = descs.map_err(|e| reader_err(ruby, &rb_self, e))?;
 
     let out = ruby.ary_new_capa(descs.len());
     for d in descs {

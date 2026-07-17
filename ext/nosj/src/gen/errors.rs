@@ -5,9 +5,10 @@
 use magnus::error::ErrorType;
 use magnus::rb_sys::AsRawValue;
 use magnus::value::ReprValue;
-use magnus::{Error, ExceptionClass, Module, RModule, Ruby};
+use magnus::{Error, Ruby};
 
 use super::ruby::rstring_bytes;
+use crate::errors::nosj_exception;
 
 pub(super) enum GenFail {
     /// Re-raise a Ruby exception captured by a protected call (user
@@ -20,14 +21,6 @@ pub(super) enum GenFail {
     GeneratorFrom(Error),
     /// NOSJ::NestingError naming the configured limit.
     Nesting(usize),
-}
-
-fn nosj_exception(ruby: &Ruby, name: &str) -> ExceptionClass {
-    let lookup = || -> Result<ExceptionClass, Error> {
-        let m: RModule = ruby.define_module("NOSJ")?;
-        m.const_get(name)
-    };
-    lookup().unwrap_or_else(|_| ruby.exception_runtime_error())
 }
 
 /// The exception's `to_s` (its message), matching what the gem embeds

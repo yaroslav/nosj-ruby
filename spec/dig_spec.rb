@@ -59,7 +59,7 @@ RSpec.describe "NOSJ.dig / NOSJ.at_pointer" do
     end
 
     it "raises on invalid JSON" do
-      expect { NOSJ.dig('{"a":', "a") }.to raise_error(RuntimeError)
+      expect { NOSJ.dig('{"a":', "a") }.to raise_error(NOSJ::ParserError)
     end
 
     it "raises ArgumentError for unsupported path element types" do

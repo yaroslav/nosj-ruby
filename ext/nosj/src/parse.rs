@@ -6,12 +6,18 @@
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
+use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::sink::{NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
 use crate::state::{ensure_marked_shadow, PullState, PULL_STATE};
 
-#[cold]
-pub(crate) fn err(ruby: &Ruby, msg: String) -> Error {
-    Error::new(ruby.exception_runtime_error(), msg)
+pub(crate) use crate::errors::parser_error as err;
+
+/// Byte range of `sub` within `source`. `sub` must be a subslice of
+/// `source` (it always is here: pointer resolution and lazy spans hand
+/// out slices borrowed from the document they resolved against).
+pub(crate) fn span_of(source: &[u8], sub: &[u8]) -> (usize, usize) {
+    let start = sub.as_ptr() as usize - source.as_ptr() as usize;
+    (start, start + sub.len())
 }
 
 /// Validate that `data` is UTF-8 (or US-ASCII) with intact coderange and
@@ -107,12 +113,16 @@ pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeO
 }
 
 /// Pop the root value off the sink stack, or map a drive failure onto
-/// the gem's exceptions. Shared by every driver.
+/// the gem's exceptions. Shared by every driver. `source`/`base` locate
+/// the driven bytes within the full document, so ParserError positions
+/// stay absolute when a subtree slice was parsed.
 fn finish_drive(
     ruby: &Ruby,
     result: Result<(), nosj::DriveError<SinkAbort>>,
     stack: &mut Vec<rb_sys::VALUE>,
     max_nesting: usize,
+    source: &[u8],
+    base: usize,
 ) -> Result<Value, Error> {
     match result {
         Ok(()) => {
@@ -122,23 +132,41 @@ fn finish_drive(
             Ok(unsafe { Value::from_raw(raw) })
         }
         Err(nosj::DriveError::Sink(SinkAbort::Overflow)) => {
-            Err(err(ruby, "document too large".into()))
+            Err(parser_error(ruby, "document too large".into()))
         }
         Err(nosj::DriveError::Sink(SinkAbort::BadBigint)) => {
-            Err(err(ruby, "invalid bignum".into()))
+            Err(parser_error(ruby, "invalid bignum".into()))
         }
-        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(err(
+        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
             ruby,
             format!("nesting of {} is too deep", max_nesting.saturating_add(1)),
         )),
-        Err(nosj::DriveError::Parse(e)) => Err(err(ruby, e.to_string())),
+        Err(nosj::DriveError::Parse(e)) => Err(parser_error_at(
+            ruby,
+            source,
+            base + e.offset,
+            e.to_string(),
+        )),
     }
 }
 
-/// Drive the fused cursor over `input`, building Ruby values through the
-/// shared thread-local sink machinery. `input` must be valid UTF-8 (see
-/// [`utf8_input`]).
-pub(crate) fn materialize(ruby: &Ruby, input: &[u8], o: &ParseNativeOpts) -> Result<Value, Error> {
+/// Drive the fused cursor over the whole of `source`. See
+/// [`materialize_at`].
+pub(crate) fn materialize(ruby: &Ruby, source: &[u8], o: &ParseNativeOpts) -> Result<Value, Error> {
+    materialize_at(ruby, source, 0, source.len(), o)
+}
+
+/// Drive the fused cursor over `source[start..end]`, building Ruby
+/// values through the shared thread-local sink machinery. `source` must
+/// be valid UTF-8 (see [`utf8_input`]); the full document is passed so
+/// error positions come out absolute.
+pub(crate) fn materialize_at(
+    ruby: &Ruby,
+    source: &[u8],
+    start: usize,
+    end: usize,
+    o: &ParseNativeOpts,
+) -> Result<Value, Error> {
     PULL_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         ensure_marked_shadow(&mut state.vstack);
@@ -166,8 +194,10 @@ pub(crate) fn materialize(ruby: &Ruby, input: &[u8], o: &ParseNativeOpts) -> Res
         };
 
         // Safety: callers verified UTF-8 (coderange or nosj slice).
-        let result = unsafe { nosj::parse_utf8_unchecked_with(input, bufs, &mut sink, o.popts) };
-        finish_drive(ruby, result, sink.stack, o.max_nesting)
+        let result = unsafe {
+            nosj::parse_utf8_unchecked_with(&source[start..end], bufs, &mut sink, o.popts)
+        };
+        finish_drive(ruby, result, sink.stack, o.max_nesting, source, start)
     })
 }
 

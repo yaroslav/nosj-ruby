@@ -5,7 +5,8 @@
 
 use magnus::{Error, RString, Ruby, Value};
 
-use crate::parse::{err, materialize, parse_native_opts, utf8_input, ParseNativeOpts};
+use crate::errors::parser_error_at;
+use crate::parse::{materialize_at, parse_native_opts, span_of, utf8_input, ParseNativeOpts};
 use crate::state::PULL_STATE;
 
 /// Resolve one JSON Pointer against `data`, materializing the matched
@@ -27,11 +28,14 @@ fn at_pointer_impl(
     });
     match resolved {
         Ok(None) => Ok(ruby.qnil().as_value()),
-        Ok(Some(slice)) => materialize(ruby, slice.as_bytes(), o),
+        Ok(Some(slice)) => {
+            let (start, end) = span_of(input, slice.as_bytes());
+            materialize_at(ruby, input, start, end, o)
+        }
         Err(e) if matches!(e.kind, nosj::ErrorKind::InvalidPointer) => {
             Err(Error::new(ruby.exception_arg_error(), e.to_string()))
         }
-        Err(e) => Err(err(ruby, e.to_string())),
+        Err(e) => Err(parser_error_at(ruby, input, e.offset, e.to_string())),
     }
 }
 
@@ -133,7 +137,7 @@ fn at_pointers_impl(
         Err(e) if matches!(e.kind, nosj::ErrorKind::InvalidPointer) => {
             return Err(Error::new(ruby.exception_arg_error(), e.to_string()));
         }
-        Err(e) => return Err(err(ruby, e.to_string())),
+        Err(e) => return Err(parser_error_at(ruby, input, e.offset, e.to_string())),
     };
 
     let out = ruby.ary_new_capa(pointers.len());
@@ -144,7 +148,10 @@ fn at_pointers_impl(
             None
         };
         match hit {
-            Some(slice) => out.push(materialize(ruby, slice.as_bytes(), o)?)?,
+            Some(slice) => {
+                let (start, end) = span_of(input, slice.as_bytes());
+                out.push(materialize_at(ruby, input, start, end, o)?)?;
+            }
             None => out.push(ruby.qnil())?,
         }
     }

@@ -17,9 +17,10 @@ use std::io::Read;
 use magnus::value::ReprValue;
 use magnus::{Error, RArray, RString, Ruby, Value};
 
+use crate::errors::{parser_error_at, runtime_error};
 use crate::gen;
 use crate::lazy::{self, DocBytes};
-use crate::parse::{err, materialize, parse_native_opts, ParseNativeOpts};
+use crate::parse::{err, materialize, materialize_at, parse_native_opts, span_of, ParseNativeOpts};
 use crate::pointer::path_to_pointer;
 use crate::state::PULL_STATE;
 
@@ -60,16 +61,16 @@ fn errno_of(e: &std::io::Error) -> Option<i32> {
 fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     use magnus::rb_sys::FromRawValue;
     let Some(errno) = errno_of(e) else {
-        return err(ruby, format!("{e} - {path}"));
+        return runtime_error(ruby, format!("{e} - {path}"));
     };
     let Ok(cpath) = std::ffi::CString::new(path) else {
-        return err(ruby, format!("{e} - {path}"));
+        return runtime_error(ruby, format!("{e} - {path}"));
     };
     // SAFETY: rb_syserr_new returns a live Errno exception instance.
     let exc = unsafe { Value::from_raw(rb_sys::rb_syserr_new(errno, cpath.as_ptr())) };
     match magnus::Exception::from_value(exc) {
         Some(exc) => exc.into(),
-        None => err(ruby, format!("{e} - {path}")),
+        None => runtime_error(ruby, format!("{e} - {path}")),
     }
 }
 
@@ -178,11 +179,14 @@ fn resolve_file_pointer(
         });
         match resolved {
             Ok(None) => Ok(ruby.qnil().as_value()),
-            Ok(Some(slice)) => materialize(ruby, slice.as_bytes(), o),
+            Ok(Some(slice)) => {
+                let (start, end) = span_of(&map, slice.as_bytes());
+                materialize_at(ruby, &map, start, end, o)
+            }
             Err(e) if matches!(e.kind, nosj::ErrorKind::InvalidPointer) => {
                 Err(Error::new(ruby.exception_arg_error(), e.to_string()))
             }
-            Err(e) => Err(err(ruby, e.to_string())),
+            Err(e) => Err(parser_error_at(ruby, &map, e.offset, e.to_string())),
         }
     })
 }

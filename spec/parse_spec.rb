@@ -56,21 +56,21 @@ RSpec.describe "NOSJ.parse" do
   describe "max_nesting:" do
     let(:deep) { "[" * 101 + "1" + "]" * 101 }
 
-    it "raises past the gem's default of 100" do
-      expect { NOSJ.parse(deep) }.to raise_error(RuntimeError, /nesting of 101 is too deep/)
+    it "raises NOSJ::NestingError past the gem's default of 100" do
+      expect { NOSJ.parse(deep) }.to raise_error(NOSJ::NestingError, /nesting of 101 is too deep/)
       expect { JSON.parse(deep) }.to raise_error(JSON::NestingError)
     end
 
     it "accepts false for unlimited and Integers as the limit" do
       expect(NOSJ.parse(deep, max_nesting: false)).to eq(JSON.parse(deep, max_nesting: false))
       expect(NOSJ.parse(deep, max_nesting: 200)).to eq(JSON.parse(deep, max_nesting: 200))
-      expect { NOSJ.parse("[[1]]", max_nesting: 1) }.to raise_error(RuntimeError)
+      expect { NOSJ.parse("[[1]]", max_nesting: 1) }.to raise_error(NOSJ::NestingError)
     end
   end
 
   describe "allow_nan:" do
     it "rejects NaN/Infinity by default and accepts them when enabled" do
-      expect { NOSJ.parse("[NaN]") }.to raise_error(RuntimeError)
+      expect { NOSJ.parse("[NaN]") }.to raise_error(NOSJ::ParserError)
       parsed = NOSJ.parse("[NaN, Infinity, -Infinity]", allow_nan: true)
       expect(parsed[0]).to be_nan
       expect(parsed[1]).to eq(Float::INFINITY)
@@ -80,7 +80,7 @@ RSpec.describe "NOSJ.parse" do
 
   describe "allow_trailing_comma:" do
     it "rejects trailing commas by default and accepts them when enabled" do
-      expect { NOSJ.parse("[1,2,]") }.to raise_error(RuntimeError)
+      expect { NOSJ.parse("[1,2,]") }.to raise_error(NOSJ::ParserError)
       expect(NOSJ.parse("[1,2,]", allow_trailing_comma: true)).to eq([1, 2])
       expect(NOSJ.parse('{"a":1,}', allow_trailing_comma: true)).to eq({"a" => 1})
     end
@@ -91,23 +91,23 @@ RSpec.describe "NOSJ.parse" do
     low = '"\udc00"'
     expect(NOSJ.parse(low).bytes).to eq(JSON.parse(low).bytes)
     # Lone HIGH surrogate is an error in both.
-    expect { NOSJ.parse('"\ud800"') }.to raise_error(RuntimeError)
+    expect { NOSJ.parse('"\ud800"') }.to raise_error(NOSJ::ParserError)
     expect { JSON.parse('"\ud800"') }.to raise_error(JSON::ParserError)
     # A proper pair decodes to the astral character.
     expect(NOSJ.parse('"🎉"')).to eq("🎉")
   end
 
-  it "raises RuntimeError on malformed documents" do
+  it "raises NOSJ::ParserError on malformed documents" do
     ['{"a":}', "[1,2", "tru", "", '{"a":1}trailing'].each do |src|
-      expect { NOSJ.parse(src) }.to raise_error(RuntimeError), "source #{src.inspect}"
+      expect { NOSJ.parse(src) }.to raise_error(NOSJ::ParserError), "source #{src.inspect}"
     end
   end
 
   it "rejects non-UTF-8 and broken-UTF-8 input" do
     utf16 = "[1]".encode(Encoding::UTF_16LE)
-    expect { NOSJ.parse(utf16) }.to raise_error(RuntimeError, /UTF-8/)
+    expect { NOSJ.parse(utf16) }.to raise_error(NOSJ::ParserError, /UTF-8/)
     broken = "\"\xFF\"".dup.force_encoding(Encoding::UTF_8)
-    expect { NOSJ.parse(broken) }.to raise_error(RuntimeError, /UTF-8/)
+    expect { NOSJ.parse(broken) }.to raise_error(NOSJ::ParserError, /UTF-8/)
   end
 
   it "raises TypeError for non-String input" do

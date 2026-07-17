@@ -26,13 +26,49 @@ module NOSJ
   # Base class for nosj errors.
   class Error < StandardError; end
 
+  # Raised when a document cannot be parsed. Carries the failure
+  # position, computed once when the parse fails (successful parses
+  # never pay for it): {#byte_offset}, 1-based {#line}, character-based
+  # {#column}, and a caret {#snippet} pointing at the offending spot.
+  # Positions are absolute within the document you passed, including
+  # through partial parsing ({NOSJ.dig}, {NOSJ.at_pointer}, lazy
+  # documents) and the file APIs. All four are +nil+ for failures
+  # without a position (encoding refusals).
+  #
+  # @example
+  #   NOSJ.parse(%({\n  "a": 1,\n  "b": }))
+  #   # => NOSJ::ParserError, with
+  #   #    e.line     #=> 3
+  #   #    e.column   #=> 8
+  #   #    e.snippet  #=> "  \"b\": }\n       ^"
+  class ParserError < Error
+    # @return [Integer, nil] byte offset of the failure in the source
+    attr_reader :byte_offset
+    # @return [Integer, nil] 1-based line of the failure
+    attr_reader :line
+    # @return [Integer, nil] 1-based character (not byte) column within
+    #   {#line}
+    attr_reader :column
+    # @return [String, nil] the offending line (windowed when long)
+    #   with a caret line underneath
+    attr_reader :snippet
+
+    # The default message plus {#snippet}: Ruby prints
+    # +detailed_message+ when an exception reaches the top level, so an
+    # unrescued parse error shows where the document broke.
+    def detailed_message(highlight: false, **opts)
+      base = super
+      snippet ? "#{base}\n#{snippet}" : base
+    end
+  end
+
   # Raised when a value cannot be generated (non-finite floats without
   # +allow_nan+, unsupported objects under +strict+, broken encodings).
   # Message-compatible with +JSON::GeneratorError+.
   class GeneratorError < Error; end
 
-  # Raised when generation exceeds +max_nesting+. Message-compatible
-  # with +JSON::NestingError+.
+  # Raised when parsing or generation exceeds +max_nesting+.
+  # Message-compatible with +JSON::NestingError+.
   class NestingError < Error; end
 
   PRETTY_GENERATE_OPTS = {
@@ -57,7 +93,9 @@ module NOSJ
   #   (Integer or +false+ for unlimited), +allow_nan+,
   #   +allow_trailing_comma+
   # @return [Object] the parsed value tree
-  # @raise [RuntimeError] when the document is malformed or not UTF-8
+  # @raise [ParserError] when the document is malformed or not UTF-8;
+  #   carries the failure position ({ParserError#line} and friends)
+  # @raise [NestingError] when nesting exceeds +max_nesting+
   # @raise [ArgumentError] for unsupported options
   def self.parse(source, opts = nil)
     parse_native(source, opts)
@@ -204,7 +242,7 @@ module NOSJ
   # @param opts [Hash, nil] the same options as {.parse}
   # @return [Object] the parsed value tree
   # @raise [SystemCallError] +Errno::ENOENT+ and friends, like File.read
-  # @raise [RuntimeError] when the document is malformed or not UTF-8
+  # @raise [ParserError] when the document is malformed or not UTF-8
   def self.load_file(path, opts = nil)
     load_file_native(path, opts)
   end
@@ -240,7 +278,7 @@ module NOSJ
   # @param opts [Hash, nil] {.parse} options applied on materialization
   # @return [NOSJ::Lazy, Object]
   # @raise [SystemCallError] +Errno::ENOENT+ and friends
-  # @raise [RuntimeError] when the file is not UTF-8 or the root is malformed
+  # @raise [ParserError] when the file is not UTF-8 or the root is malformed
   def self.load_lazy_file(path, opts = nil)
     load_lazy_file_native(path, opts)
   end

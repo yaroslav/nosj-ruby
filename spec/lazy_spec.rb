@@ -32,14 +32,14 @@ RSpec.describe "NOSJ.lazy" do
 
     it "rejects broken and non-UTF-8 input like parse" do
       expect { NOSJ.lazy("\xFF\xFE".dup.force_encoding(Encoding::UTF_8)) }
-        .to raise_error(RuntimeError)
+        .to raise_error(NOSJ::ParserError)
       expect { NOSJ.lazy("{}".encode(Encoding::UTF_16LE)) }
-        .to raise_error(RuntimeError)
+        .to raise_error(NOSJ::ParserError)
     end
 
     it "rejects malformed roots eagerly" do
-      expect { NOSJ.lazy("") }.to raise_error(RuntimeError)
-      expect { NOSJ.lazy("nope") }.to raise_error(RuntimeError)
+      expect { NOSJ.lazy("") }.to raise_error(NOSJ::ParserError)
+      expect { NOSJ.lazy("nope") }.to raise_error(NOSJ::ParserError)
     end
 
     it "cannot be allocated directly" do
@@ -84,7 +84,7 @@ RSpec.describe "NOSJ.lazy" do
       broken = NOSJ.lazy('{"a": [1, tru], "b": 2}')
       node = broken["a"]
       expect(node).to be_a(NOSJ::Lazy)
-      expect { node.value }.to raise_error(RuntimeError)
+      expect { node.value }.to raise_error(NOSJ::ParserError)
       expect(broken["b"]).to eq(2)
     end
   end

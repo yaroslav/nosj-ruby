@@ -171,6 +171,21 @@ NOSJ.valid?('{"a":}')                 #=> false
 NOSJ.valid?(src, max_nesting: false)  # same options as parse
 ```
 
+**Rich parse errors.** A failed parse raises `NOSJ::ParserError`
+carrying where the document broke—`#byte_offset`, `#line`, `#column`,
+and a caret `#snippet`—computed only when a parse fails, so success
+pays nothing. Positions stay absolute through partial parsing, lazy
+documents, and the file APIs; unrescued errors print the snippet:
+
+```ruby
+NOSJ.parse(%({\n  "a": 1,\n  "b": }))
+# NOSJ::ParserError: unexpected character at byte 19
+#   e.line     #=> 3
+#   e.column   #=> 8
+#   e.snippet  #=>   "b": }
+#                         ^
+```
+
 ## Benchmarks
 
 Every installed JSON gem, benchmark-ips: AWS EC2 c7a.2xlarge (AMD EPYC 9R14, Zen 4), Ruby 4.0.6 + YJIT, json 2.21.1, Oj 3.17.4, RapidJSON 0.4.0, FastJsonparser 0.6.0, Yajl 1.4.3, PGO build, 2026-07-16. `×N` = times slower than nosj. 
@@ -265,8 +280,10 @@ You mostly don't have to do anything. Some differences:
   UTF-8) follow the strict semantics instead.
 - Unlike `Array#dig`, negative indices in `NOSJ.dig` return nil (JSON
   Pointer has no equivalent).
-- Parse error *messages* use byte offsets rather than the gem's
-  phrasing (classes match).
+- Parse errors raise `NOSJ::ParserError` (`NOSJ::NestingError` past
+  `max_nesting`, like the gem); messages use byte offsets rather than
+  the gem's phrasing, and the exception carries `#line`, `#column`,
+  and a caret `#snippet`.
 
 Everything else—including the gem's exact float formatting, which is
 not the shortest-round-trip form most libraries emit—matches

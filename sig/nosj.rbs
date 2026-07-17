@@ -25,6 +25,21 @@ module NOSJ
   class Error < StandardError
   end
 
+  # Parse failures. Position accessors are nil for failures without
+  # one (encoding refusals); positions are byte-absolute within the
+  # document, lines and (character) columns 1-based.
+  class ParserError < Error
+    def byte_offset: () -> Integer?
+
+    def line: () -> Integer?
+
+    def column: () -> Integer?
+
+    def snippet: () -> String?
+
+    def detailed_message: (?highlight: bool, **untyped) -> String
+  end
+
   class GeneratorError < Error
   end
 

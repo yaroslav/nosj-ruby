@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+- Rich parse errors. Parse failures now raise `NOSJ::ParserError`
+  (previously a bare `RuntimeError`) carrying the failure position,
+  computed only when a parse fails: `#byte_offset`, 1-based `#line`,
+  character-based `#column`, and a caret `#snippet` showing the
+  offending line (windowed when the line is long, as minified JSON
+  usually is). Positions are absolute within the document you passed,
+  including through partial parsing (`dig`, `at_pointer`, batches),
+  lazy documents, and the file APIs. `#detailed_message` appends the
+  snippet, so unrescued errors print it. Failures with no position
+  (encoding refusals) leave the accessors nil. Exceeding `max_nesting`
+  during parsing now raises `NOSJ::NestingError`, matching the gem's
+  class (generation already did); rescues of the old `RuntimeError`
+  need updating to `NOSJ::ParserError`/`NOSJ::Error`.
 - Rails mode: `require "nosj/rails"` accelerates a Rails application
   in both directions. It installs a nosj-backed ActiveSupport JSON
   encoder, so `obj.to_json`, `render json:`, and `ActiveSupport::JSON.encode` walk the object tree natively—values recurse through `as_json` exactly

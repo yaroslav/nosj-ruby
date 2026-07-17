@@ -36,7 +36,7 @@ module NOSJ
     # @raise [JSON::ParserError] when the document is malformed
     def load(string, options = {})
       ::NOSJ.parse(string, options[:symbolize_names] ? SYMBOLIZE : nil)
-    rescue RuntimeError => e
+    rescue ::NOSJ::ParserError, ::NOSJ::NestingError => e
       raise ParseError, e.message
     end
 

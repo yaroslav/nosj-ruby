@@ -16,6 +16,7 @@
 //! - `gen/`: generation (JSON.generate-compatible walker, options,
 //!   key cache, protect shims, error mapping).
 
+pub mod errors;
 pub mod files;
 pub mod gen;
 pub mod lazy;

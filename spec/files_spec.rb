@@ -44,9 +44,9 @@ RSpec.describe "NOSJ file APIs" do
 
     it "rejects malformed and non-UTF-8 content like parse" do
       expect { NOSJ.load_file(write_fixture('{"a":')) }
-        .to raise_error(RuntimeError)
+        .to raise_error(NOSJ::ParserError)
       expect { NOSJ.load_file(write_fixture("\xFF\xFE{}")) }
-        .to raise_error(RuntimeError, /UTF-8/)
+        .to raise_error(NOSJ::ParserError, /UTF-8/)
     end
 
     it "handles corpus files identically to parse" do
@@ -117,7 +117,7 @@ RSpec.describe "NOSJ file APIs" do
       expect { NOSJ.load_lazy_file(File.join(@dir, "nope.json")) }
         .to raise_error(Errno::ENOENT)
       expect { NOSJ.load_lazy_file(write_fixture("\xFF\xFE{}")) }
-        .to raise_error(RuntimeError, /UTF-8/)
+        .to raise_error(NOSJ::ParserError, /UTF-8/)
     end
   end
 

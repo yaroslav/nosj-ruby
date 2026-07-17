@@ -73,7 +73,9 @@ module NOSJ
         end
       end
       NOSJ.parse(source, opts)
-    rescue RuntimeError => e
+    rescue NOSJ::NestingError => e
+      raise ::JSON::NestingError, e.message
+    rescue NOSJ::ParserError => e
       raise ::JSON::ParserError, e.message
     end
 
