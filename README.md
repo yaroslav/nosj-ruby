@@ -99,7 +99,9 @@ up to ×5.2 on large trees and ×14 on HTML-heavy content—see
 
 ## What's in the box
 
-**The `json` gem API**, on the `NOSJ` module:
+### json API
+
+The `json` gem API, on the `NOSJ` module:
 
 ```ruby
 NOSJ.parse(src, symbolize_names: true)   # also: freeze, max_nesting,
@@ -108,7 +110,9 @@ NOSJ.generate(obj)                       # indent, space, object_nl, ...,
 NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict
 ```
 
-**Lazy documents.** `NOSJ.lazy` wraps a document in a lazy view: read
+### Lazy documents
+
+`NOSJ.lazy` wraps a document in a lazy view: read
 a field and only that path is parsed—containers stay lazy, scalars
 arrive as plain Ruby values, and repeated reads are cached:
 
@@ -124,8 +128,9 @@ Pass a frozen string and creating the view is practically free—
 nanoseconds, even on a megabyte document. Malformed content raises
 when it is first read, not at wrap time.
 
+### Partial parsing
 
-**Partial parsing.** Pull values out of a document without
+Pull values out of a document without
 materializing the rest—skipped content is stepped over at SIMD block
 speed, so a lookup costs what it skips, not what the document weighs:
 
@@ -145,7 +150,9 @@ at the far end of a 570 KB document costs ~71µs, still 13× faster
 than parse-then-dig. Misses return nil; matched subtrees materialize
 with the same options as `parse` (`symbolize_names:`, `freeze:`).
 
-**Files.** Every mode has a file-native form, so a document never
+### Files API
+
+Every mode has a file-native form, so a document never
 round-trips through a throwaway Ruby String:
 
 ```ruby
@@ -161,10 +168,11 @@ read are never loaded from disk. Missing files raise the usual
 `Errno` exceptions. Measured numbers live in
 [Benchmarks → File APIs](#file-apis).
 
-**Validation without parsing.** `NOSJ.valid?` runs the full
-parser—tokenizers, string decode, number validation—into a null sink
-and allocates no Ruby objects at all. It is 2-4× faster than
-`NOSJ.parse`, which already leads every parser above:
+### Validation without parsing
+
+`NOSJ.valid?` runs the full parser—tokenizers, string decode, 
+number validation—into a null sink and allocates no Ruby objects
+at all. It is 2-4× faster than `NOSJ.parse`:
 
 ```ruby
 NOSJ.valid?('{"a":1}')                #=> true
@@ -172,10 +180,11 @@ NOSJ.valid?('{"a":}')                 #=> false
 NOSJ.valid?(src, max_nesting: false)  # same options as parse
 ```
 
-**Document statistics.** `NOSJ.stats` answers "what is this 40 MB
-blob": one counting pass through the same null-sink machinery—no Ruby
-value is built for the document, and it costs *less* than a parse
-(~1.3× faster on twitter.json):
+### Document statistics
+
+`NOSJ.stats` answers "what is this 40 MB blob": one counting pass 
+through the same null-sink machinery—no Ruby value is built for 
+the document, and it costs _less_ than a parse (~1.3× faster on `twitter.json`):
 
 ```ruby
 s = NOSJ.stats(blob)          # or NOSJ.stats_file("huge.json")
@@ -194,7 +203,9 @@ Nesting is unlimited by default (a deep blob is exactly what a
 diagnostic should describe); malformed documents raise the usual rich
 `ParserError`.
 
-**Rich parse errors.** A failed parse raises `NOSJ::ParserError`
+### Rich parse errors
+
+A failed parse raises `NOSJ::ParserError`
 carrying where the document broke—`#byte_offset`, `#line`, `#column`,
 and a caret `#snippet`—computed only when a parse fails, so success
 pays nothing. Positions stay absolute through partial parsing, lazy
