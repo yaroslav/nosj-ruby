@@ -70,6 +70,17 @@ module NOSJ
 
   def self.lazy: (String source, ?opts opts) -> (Lazy | value)
 
+  # NDJSON / JSON Lines: one parsed value per non-blank line.
+  def self.each_line: (String source, ?opts opts) { (value) -> void } -> nil
+                    | (String source, ?opts opts) -> Enumerator[value, nil]
+
+  def self.each_line_file: (String path, ?opts opts) { (value) -> void } -> nil
+                         | (String path, ?opts opts) -> Enumerator[value, nil]
+
+  def self.generate_lines: (_Each[untyped] values, ?opts opts) -> String
+
+  def self.write_lines: (String path, _Each[untyped] values, ?opts opts) -> Integer
+
   def self.load_file: (String path, ?opts opts) -> value
 
   def self.write_file: (String path, untyped obj, ?opts opts) -> Integer

@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+- NDJSON / JSON Lines. `NOSJ.each_line(source, opts)` yields one
+  parsed value per line (Enumerator without a block, so
+  `.first(10)`/`.lazy` walk only what they consume), skipping blank
+  lines and enforcing one value per line; a malformed line raises the
+  rich `ParserError` whose `#line` is the physical line number in the
+  stream. `NOSJ.generate_lines(values, opts)` emits one compact
+  newline-terminated document per element in a single buffer pass
+  (measured 4.1× faster than the map-generate-join idiom on twitter
+  statuses; `each_line` is 1.6× faster than line-split +
+  `JSON.parse`), rejecting formatting options that would break line
+  framing. File forms: `NOSJ.each_line_file` streams over a read-only
+  memory map, `NOSJ.write_lines` generates straight to disk and
+  returns the byte count. Parse options apply per line; pass a frozen
+  string to `each_line` for zero-copy iteration.
 - `NOSJ.stats(source, opts)` / `NOSJ.stats_file(path, opts)`: document
   statistics from one counting pass through the null-sink machinery,
   answering "what is this 40 MB blob" without building any Ruby values

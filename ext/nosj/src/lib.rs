@@ -22,6 +22,7 @@ pub mod errors;
 pub mod files;
 pub mod gen;
 pub mod lazy;
+pub mod lines;
 pub mod parse;
 pub mod pointer;
 pub mod sink;
@@ -63,6 +64,16 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("dig_file_native", method!(files::dig_file_native, 2))?;
     module.define_singleton_method("stats_native", method!(stats::stats_native, 2))?;
     module.define_singleton_method("stats_file_native", method!(stats::stats_file_native, 2))?;
+    module.define_singleton_method("each_line_native", method!(lines::each_line_native, 2))?;
+    module.define_singleton_method(
+        "each_line_file_native",
+        method!(lines::each_line_file_native, 2),
+    )?;
+    module.define_singleton_method(
+        "generate_lines_native",
+        method!(gen::generate_lines_native, 2),
+    )?;
+    module.define_singleton_method("write_lines_native", method!(files::write_lines_native, 3))?;
     let lazy_class = module.define_class("Lazy", ruby.class_object())?;
     // Nodes are only born from NOSJ.lazy / lazy resolution.
     lazy_class.undef_default_alloc_func();

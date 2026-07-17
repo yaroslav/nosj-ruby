@@ -211,7 +211,21 @@ fn generate_with<R>(
     if out.capacity() < cap_hint {
         out.reserve(cap_hint);
     }
+    emit_one(ruby, obj, cfg, out, keys)?;
+    finish(ruby, out)
+}
 
+/// Emit one value into `out` (appending, not clearing), mapping walker
+/// failures onto the gem's exceptions. `inline(always)`: this is the
+/// single-document hot path's only call layer.
+#[inline(always)]
+fn emit_one(
+    ruby: &Ruby,
+    obj: Value,
+    cfg: &opts::GenConfig,
+    out: &mut Vec<u8>,
+    keys: &mut GenKeyCache,
+) -> Result<(), Error> {
     let mut g = Gen {
         out,
         cfg,
@@ -224,13 +238,97 @@ fn generate_with<R>(
         g.emit_value::<false>(obj.as_raw(), cfg.start_depth)
     };
 
-    let Gen { out, fail, .. } = g;
+    let Gen { fail, .. } = g;
     match (result, fail) {
-        (Ok(()), None) => finish(ruby, out),
+        (Ok(()), None) => Ok(()),
         (_, Some(fail)) => Err(raise_fail(ruby, fail)),
         (Err(()), None) => Err(Error::new(
             ruby.exception_runtime_error(),
             "generation failed without error detail",
         )),
     }
+}
+
+/// Formatting strings holding a newline (or carriage return) would
+/// split one value across NDJSON lines; the lines entries refuse them.
+fn breaks_line_framing(cfg: &opts::GenConfig) -> bool {
+    [
+        &cfg.indent,
+        &cfg.space,
+        &cfg.space_before,
+        &cfg.object_nl,
+        &cfg.array_nl,
+    ]
+    .into_iter()
+    .any(|v| v.iter().any(|&b| b == b'\n' || b == b'\r'))
+}
+
+/// `NOSJ.generate_lines_native(values, opts)`: NDJSON generation, one
+/// compact document per element into ONE pooled buffer, newline after
+/// each (every line terminated, per the format).
+pub fn generate_lines_native(
+    ruby: &Ruby,
+    _rb_self: Value,
+    values: magnus::RArray,
+    opts: Value,
+) -> Result<RString, Error> {
+    generate_lines_bytes_into(ruby, values, opts, finish_rstring)
+}
+
+/// The write-to-disk form of [`generate_lines_native`], used by
+/// `NOSJ.write_lines`.
+pub(crate) fn generate_lines_bytes_into<R>(
+    ruby: &Ruby,
+    values: magnus::RArray,
+    opts: Value,
+    finish: impl FnOnce(&Ruby, &[u8]) -> Result<R, Error>,
+) -> Result<R, Error> {
+    use magnus::value::ReprValue;
+    let built;
+    let (cfg, cap_hint): (&opts::GenConfig, usize) = if opts.is_nil() {
+        (&opts::DEFAULT_CONFIG, 0)
+    } else {
+        let (c, hint) = opts::parse_gen_opts(ruby, opts)?;
+        built = c;
+        (&built, hint)
+    };
+    if breaks_line_framing(cfg) {
+        return Err(Error::new(
+            ruby.exception_arg_error(),
+            "formatting options containing newlines would break JSON Lines framing",
+        ));
+    }
+    GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut scratch) => {
+            let scratch = &mut *scratch;
+            let GenScratch { buf, keys, .. } = scratch;
+            generate_lines_with(ruby, values, cfg, cap_hint, buf, keys, finish)
+        }
+        Err(_) => {
+            let mut buf = Vec::new();
+            let mut keys = GenKeyCache::default();
+            generate_lines_with(ruby, values, cfg, cap_hint, &mut buf, &mut keys, finish)
+        }
+    })
+}
+
+fn generate_lines_with<R>(
+    ruby: &Ruby,
+    values: magnus::RArray,
+    cfg: &opts::GenConfig,
+    cap_hint: usize,
+    out: &mut Vec<u8>,
+    keys: &mut GenKeyCache,
+    finish: impl FnOnce(&Ruby, &[u8]) -> Result<R, Error>,
+) -> Result<R, Error> {
+    out.clear();
+    if out.capacity() < cap_hint {
+        out.reserve(cap_hint);
+    }
+    for i in 0..values.len() {
+        let obj: Value = values.entry(i as isize)?;
+        emit_one(ruby, obj, cfg, out, keys)?;
+        out.push(b'\n');
+    }
+    finish(ruby, out)
 }

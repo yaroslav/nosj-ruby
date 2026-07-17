@@ -129,6 +129,24 @@ pub fn write_file_native(
     })
 }
 
+/// `NOSJ.write_lines(path, values, opts)`: generate NDJSON (one
+/// document per element, newline-terminated) and write the bytes
+/// straight from the generator's pooled buffer. Returns the byte
+/// count, like `File.write`.
+pub fn write_lines_native(
+    ruby: &Ruby,
+    _rb_self: Value,
+    path: RString,
+    values: magnus::RArray,
+    opts: Value,
+) -> Result<usize, Error> {
+    let p = path.to_string()?;
+    gen::generate_lines_bytes_into(ruby, values, opts, |ruby, bytes| {
+        fs::write(&p, bytes).map_err(|e| io_error(ruby, &p, &e))?;
+        Ok(bytes.len())
+    })
+}
+
 /// Map `path` read-only and hand a UTF-8-checked view to `f`.
 pub(crate) fn with_mapped_file<R>(
     ruby: &Ruby,

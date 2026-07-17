@@ -19,7 +19,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 nothing to compile on install).
 - Otherwise, same API and option names as gem json.
 
-**And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, and accelerate an entire application with a one-line drop-in.
+**And there's more**: validate documents without building a single Ruby object, resolve whole batches of paths in one pass, stream NDJSON / JSON Lines in both directions, and accelerate an entire application with a one-line drop-in.
 
 - [Requirements](#requirements)
 - [Getting started](#getting-started)
@@ -167,6 +167,29 @@ The partial and lazy forms memory-map the file, so pages you never
 read are never loaded from disk. Missing files raise the usual
 `Errno` exceptions. Measured numbers live in
 [Benchmarks → File APIs](#file-apis).
+
+### NDJSON / JSON Lines
+
+Logs, data pipelines, LLM batch files—one JSON document per line.
+`NOSJ.each_line` streams values out (1.6× faster than the
+line-split-and-`JSON.parse` idiom on twitter statuses), and
+`NOSJ.generate_lines` builds the whole stream in one buffer pass
+(4.1× faster than map-generate-join):
+
+```ruby
+NOSJ.each_line(log) { |event| ingest(event) }   # or an Enumerator:
+NOSJ.each_line(log).first(10)                   # walks only 10 lines
+
+NOSJ.generate_lines(events)          #=> %({"a":1}\n{"b":2}\n...)
+NOSJ.each_line_file("events.ndjson") { |e| }    # over a memory map
+NOSJ.write_lines("out.ndjson", events)          # straight to disk
+```
+
+Blank lines are skipped, one value per line is enforced, and a
+malformed line raises a [rich `ParserError`](#rich-parse-errors) whose
+`#line` is the physical line in the stream. Parse options apply per
+line—`NOSJ.each_line(log, freeze: true)` yields Ractor-shareable
+values.
 
 ### Validation without parsing
 

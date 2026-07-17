@@ -312,6 +312,95 @@ module NOSJ
     dig_file_native(path, path_elements)
   end
 
+  # NDJSON / JSON Lines: yields one parsed value per line of +source+.
+  # Framing is exact because a raw newline can never occur inside a
+  # JSON value; blank lines are skipped (the NDJSON convention). One
+  # value per line is enforced: a second value on a line raises, and a
+  # malformed line raises {ParserError} whose {ParserError#line} is the
+  # physical line number in +source+.
+  #
+  # Pass a frozen string for zero-copy iteration (an unfrozen source is
+  # walked over a private copy, like {.lazy}). The block may itself
+  # call any NOSJ method.
+  #
+  # @example
+  #   NOSJ.each_line(log) { |event| ingest(event) }
+  #   NOSJ.each_line(log).first(10)          # Enumerator when blockless
+  #
+  # @param source [String] newline-delimited JSON (UTF-8 or US-ASCII)
+  # @param opts [Hash, nil] the same options as {.parse}, applied per line
+  # @yieldparam value [Object] one parsed document per non-blank line
+  # @return [Enumerator] when no block is given, else +nil+
+  # @raise [ParserError] on the first malformed line
+  def self.each_line(source, opts = nil, &block)
+    return enum_for(:each_line, source, opts) unless block
+    each_line_native(source, opts, &block)
+  end
+
+  # {.each_line} against a file: the NDJSON stream is walked over a
+  # read-only memory map, so the file never becomes a Ruby String.
+  #
+  # @example
+  #   NOSJ.each_line_file("events.ndjson") { |event| ingest(event) }
+  #
+  # @param path [String] the NDJSON file (UTF-8)
+  # @param opts [Hash, nil] the same options as {.parse}, applied per line
+  # @yieldparam value [Object] one parsed document per non-blank line
+  # @return [Enumerator] when no block is given, else +nil+
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends
+  # @raise [ParserError] on the first malformed line
+  def self.each_line_file(path, opts = nil, &block)
+    return enum_for(:each_line_file, path, opts) unless block
+    each_line_file_native(path, opts, &block)
+  end
+
+  # Generates NDJSON / JSON Lines: one compact document per element,
+  # each terminated with a newline, built in a single pass into one
+  # buffer. Formatting options containing newlines raise ArgumentError
+  # (they would break the line framing); everything else from
+  # {.generate} applies.
+  #
+  # @example
+  #   NOSJ.generate_lines([{a: 1}, {b: 2}])  #=> %({"a":1}\n{"b":2}\n)
+  #
+  # @param values [Array, Enumerable] one document per element
+  # @param opts [Hash, nil] the same options as {.generate}
+  # @return [String] the NDJSON document (empty when +values+ is empty)
+  # @raise [ArgumentError] for formatting options that contain newlines
+  # @raise [GeneratorError] (see {.generate})
+  def self.generate_lines(values, opts = nil)
+    generate_lines_native(lines_array(values), opts)
+  end
+
+  # {.generate_lines} straight to a file, streaming the generator's
+  # buffer to disk like {.write_file}.
+  #
+  # @example
+  #   NOSJ.write_lines("out.ndjson", events)  #=> bytes written
+  #
+  # @param path [String] the file to (over)write
+  # @param values [Array, Enumerable] one document per line
+  # @param opts [Hash, nil] the same options as {.generate}
+  # @return [Integer] the number of bytes written, like File.write
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends
+  # @raise [ArgumentError] for formatting options that contain newlines
+  # @raise [GeneratorError] (see {.generate})
+  def self.write_lines(path, values, opts = nil)
+    write_lines_native(path, lines_array(values), opts)
+  end
+
+  # One document per element: Arrays pass through, other Enumerables
+  # convert, anything else (nil included, whose to_a would silently
+  # yield []) is a TypeError.
+  def self.lines_array(values)
+    return values if values.is_a?(Array)
+    unless values.is_a?(Enumerable)
+      raise TypeError, "no implicit conversion of #{values.class} into Array"
+    end
+    values.to_a
+  end
+  private_class_method :lines_array
+
   # Document statistics from one full-parser pass into a counting sink:
   # no Ruby value is built for the document itself, only the small
   # result Hash. A debugging endpoint for "what is this 40 MB blob".
