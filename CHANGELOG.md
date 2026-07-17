@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.3.1] - 2026-07-17
 
 - Fixed: `NOSJ.minify` / `NOSJ.reformat` produced unparseable output
   for a float that overflows to Infinity—a huge-exponent literal like

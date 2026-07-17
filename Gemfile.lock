@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    nosj (0.3.0)
+    nosj (0.3.1)
       rb_sys (~> 0.9.91)
 
 GEM
