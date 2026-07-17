@@ -311,4 +311,58 @@ module NOSJ
   def self.dig_file(path, *path_elements)
     dig_file_native(path, path_elements)
   end
+
+  # Document statistics from one full-parser pass into a counting sink:
+  # no Ruby value is built for the document itself, only the small
+  # result Hash. A debugging endpoint for "what is this 40 MB blob".
+  #
+  # The result (Symbol keys):
+  #
+  #   {
+  #     byte_size: 631,             # of the document
+  #     root: :object,              # :object/:array/:string/:integer/
+  #                                 # :float/:boolean/:null
+  #     max_depth: 4,               # container nesting, counted like
+  #                                 # max_nesting (root container = 1)
+  #     values: {total:, objects:, arrays:, strings:, integers:,
+  #              floats:, booleans:, nulls:},
+  #     keys: {total:, unique:},
+  #     key_histogram: {"name" => 128, ...},  # sorted by count desc,
+  #                                           # so .first(10) = top 10
+  #     containers: {max_object_entries:, max_array_length:},
+  #     strings: {bytes:, max_bytes:}         # decoded UTF-8 bytes
+  #   }
+  #
+  # Unlike {.parse}, nesting is UNLIMITED by default (a deep blob is
+  # exactly what a diagnostic should describe); pass +max_nesting+ to
+  # enforce a limit. Histogram memory is proportional to the number of
+  # unique keys.
+  #
+  # @example Top ten keys of a mystery blob
+  #   NOSJ.stats(blob)[:key_histogram].first(10)
+  #
+  # @param source [String] the JSON document (UTF-8 or US-ASCII)
+  # @param opts [Hash, nil] +max_nesting+, +allow_nan+,
+  #   +allow_trailing_comma+ (acceptance options only)
+  # @return [Hash] the statistics described above
+  # @raise [ParserError] when the document is malformed or not UTF-8
+  def self.stats(source, opts = nil)
+    stats_native(source, opts)
+  end
+
+  # {.stats} against a file: memory-maps it and runs the counting pass
+  # without reading the document into Ruby. +byte_size+ is the file
+  # size.
+  #
+  # @example
+  #   NOSJ.stats_file("huge.json") => {byte_size: 41_943_040, ...}
+  #
+  # @param path [String] the file to inspect (UTF-8)
+  # @param opts [Hash, nil] same options as {.stats}
+  # @return [Hash] the statistics described on {.stats}
+  # @raise [SystemCallError] +Errno::ENOENT+ and friends
+  # @raise [ParserError] when the file is malformed or not UTF-8
+  def self.stats_file(path, opts = nil)
+    stats_file_native(path, opts)
+  end
 end

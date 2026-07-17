@@ -54,6 +54,12 @@ module NOSJ
 
   def self.valid?: (String source, ?opts opts) -> bool
 
+  # Document statistics (byte_size, root, max_depth, values, keys,
+  # key_histogram, containers, strings) from one counting-sink pass.
+  def self.stats: (String source, ?opts opts) -> Hash[Symbol, untyped]
+
+  def self.stats_file: (String path, ?opts opts) -> Hash[Symbol, untyped]
+
   def self.dig: (String source, *path_element path) -> value
 
   def self.dig_many: (String source, Array[Array[path_element]] paths, ?opts opts) -> Array[value]

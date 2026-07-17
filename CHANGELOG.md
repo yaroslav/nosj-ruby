@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+- `NOSJ.stats(source, opts)` / `NOSJ.stats_file(path, opts)`: document
+  statistics from one counting pass through the null-sink machinery,
+  answering "what is this 40 MB blob" without building any Ruby values
+  for the document (measured ~1.3× faster than a full parse). Reports
+  `byte_size`, `root` kind, `max_depth`, value counts by type, key
+  totals, a key histogram sorted by count, largest container sizes,
+  and string byte totals. Nesting is unlimited by default (pass
+  `max_nesting` to enforce a limit); `allow_nan` and
+  `allow_trailing_comma` are honored; malformed documents raise the
+  rich `ParserError`. The file form memory-maps, so the document never
+  enters Ruby at all.
 - Rich parse errors. Parse failures now raise `NOSJ::ParserError`
   (previously a bare `RuntimeError`) carrying the failure position,
   computed only when a parse fails: `#byte_offset`, 1-based `#line`,

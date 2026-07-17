@@ -9,6 +9,8 @@
 //!   demand over shared document bytes).
 //! - `files.rs`: file entry points (load_file, write_file, and the
 //!   mmap-backed load_lazy_file / at_pointer_file / dig_file).
+//! - `stats.rs`: document statistics (NOSJ.stats / stats_file) from a
+//!   counting sink pass.
 //! - `sink.rs`: the VALUE-building and validation sinks with their
 //!   interned-key caches.
 //! - `state.rs`: per-thread reusable state and the GC-marked value
@@ -24,6 +26,7 @@ pub mod parse;
 pub mod pointer;
 pub mod sink;
 pub mod state;
+pub mod stats;
 
 use magnus::{method, prelude::*, Error, Ruby};
 
@@ -58,6 +61,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         method!(files::at_pointer_file_native, 3),
     )?;
     module.define_singleton_method("dig_file_native", method!(files::dig_file_native, 2))?;
+    module.define_singleton_method("stats_native", method!(stats::stats_native, 2))?;
+    module.define_singleton_method("stats_file_native", method!(stats::stats_file_native, 2))?;
     let lazy_class = module.define_class("Lazy", ruby.class_object())?;
     // Nodes are only born from NOSJ.lazy / lazy resolution.
     lazy_class.undef_default_alloc_func();

@@ -171,6 +171,28 @@ NOSJ.valid?('{"a":}')                 #=> false
 NOSJ.valid?(src, max_nesting: false)  # same options as parse
 ```
 
+**Document statistics.** `NOSJ.stats` answers "what is this 40 MB
+blob": one counting pass through the same null-sink machinery—no Ruby
+value is built for the document, and it costs *less* than a parse
+(~1.3× faster on twitter.json):
+
+```ruby
+s = NOSJ.stats(blob)          # or NOSJ.stats_file("huge.json")
+s[:byte_size]                 #=> 631514
+s[:root]                      #=> :object
+s[:max_depth]                 #=> 10
+s[:values]                    #=> {total: 13914, objects: 1264, arrays: 1050,
+                              #    strings: 4754, integers: 2108, ...}
+s[:keys]                      #=> {total: 13345, unique: 94}
+s[:key_histogram].first(3)    #=> [["id", 447], ["id_str", 447], ["urls", 364]]
+s[:containers]                #=> {max_object_entries: 40, max_array_length: 100}
+s[:strings]                   #=> {bytes: 200716, max_bytes: 463}
+```
+
+Nesting is unlimited by default (a deep blob is exactly what a
+diagnostic should describe); malformed documents raise the usual rich
+`ParserError`.
+
 **Rich parse errors.** A failed parse raises `NOSJ::ParserError`
 carrying where the document broke—`#byte_offset`, `#line`, `#column`,
 and a caret `#snippet`—computed only when a parse fails, so success

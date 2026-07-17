@@ -130,7 +130,7 @@ pub fn write_file_native(
 }
 
 /// Map `path` read-only and hand a UTF-8-checked view to `f`.
-fn with_mapped_file<R>(
+pub(crate) fn with_mapped_file<R>(
     ruby: &Ruby,
     path: &str,
     f: impl FnOnce(memmap2::Mmap) -> Result<R, Error>,
