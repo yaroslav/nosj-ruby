@@ -1,7 +1,7 @@
-## [Unreleased]
+## [0.3.2] - 2026-07-19
 
-- Fixed: the precompiled platform gems linked `libruby` into the
-  extension. The arm64-darwin binaries recorded the build runner's
+- **IMPORTANT**—Fixed: the precompiled platform gems linked `libruby`
+  into the extension. The arm64-darwin binaries recorded the build runner's
   absolute Ruby path, so `require "nosj"` failed with `Library not
   loaded: /Users/runner/hostedtoolcache/...` on any machine with Ruby
   installed elsewhere (#2), and the Linux binaries carried a

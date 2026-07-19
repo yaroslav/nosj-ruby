@@ -5,7 +5,7 @@
 # required by lib/nosj.rb as "nosj/nosj" (Init_nosj set explicitly in
 # lib.rs). Gem name, module, and API are plain nosj.
 name = "nosj_native"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Yaroslav Markin <yaroslav@markin.net>"]
 license = "MIT"
