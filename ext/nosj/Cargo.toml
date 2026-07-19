@@ -16,7 +16,7 @@ name = "nosj"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-magnus = { git = "https://github.com/matsadler/magnus", features = ["embed", "rb-sys"] }
+magnus = { version = "0.8", features = ["rb-sys"] }
 rb-sys = { version = "0.9.124", default-features = false }
 ahash = "0.8.11"
 # Read-only file mapping for the file entry points (load_lazy_file,

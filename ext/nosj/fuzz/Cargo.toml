@@ -9,9 +9,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-# Must match the extension's own magnus line so cargo unifies the
-# rb-sys link (one libruby, one VM).
-magnus = { git = "https://github.com/matsadler/magnus", features = ["embed", "rb-sys"] }
+# Same magnus version as the extension so cargo unifies them into one
+# crate. Only this harness enables "embed" (rb-sys/link-ruby): fuzz
+# binaries host their own VM, while the extension must never link
+# libruby (its symbols resolve from the host process at load time).
+magnus = { version = "0.8", features = ["embed", "rb-sys"] }
 # The extension as an rlib; its lib target is named `nosj` (the bundle
 # name), so rename the dependency to keep fuzz code readable.
 nosj_ext = { path = "..", package = "nosj_native" }

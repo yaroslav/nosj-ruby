@@ -1,3 +1,17 @@
+## [Unreleased]
+
+- Fixed: the precompiled platform gems linked `libruby` into the
+  extension. The arm64-darwin binaries recorded the build runner's
+  absolute Ruby path, so `require "nosj"` failed with `Library not
+  loaded: /Users/runner/hostedtoolcache/...` on any machine with Ruby
+  installed elsewhere (#2), and the Linux binaries carried a
+  `libruby.so` runtime dependency that a statically built Ruby (the
+  ruby-build default) cannot satisfy. The cause was magnus's `embed`
+  feature—needed only by the fuzz harness, which now enables it
+  itself—pulling `rb-sys/link-ruby` into the gem build. Extension
+  symbols now resolve from the host process at load time, and the
+  release build refuses to stage a binary that links libruby.
+
 ## [0.3.1] - 2026-07-17
 
 - Fixed: `NOSJ.minify` / `NOSJ.reformat` produced unparseable output

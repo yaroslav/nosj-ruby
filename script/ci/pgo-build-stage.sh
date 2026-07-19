@@ -32,9 +32,32 @@ else
   PGO_BASE_RUSTFLAGS="${PGO_BASE_RUSTFLAGS-}" ./script/pgo.sh
 fi
 
+# Refuse to stage an extension that links libruby (issue #2): the link
+# records the builder's Ruby (an absolute path on macOS, a soname on
+# Linux), which does not exist on user machines. Extension symbols must
+# resolve from the host process at load time. Windows is exempt: PE has
+# no dynamic lookup, so linking the Ruby import library is required.
+ext_path="lib/nosj/nosj.${dlext}"
+case "$(uname -s)" in
+Darwin)
+  if otool -L "$ext_path" | grep -q libruby; then
+    echo "ERROR: ${ext_path} links libruby:" >&2
+    otool -L "$ext_path" >&2
+    exit 1
+  fi
+  ;;
+Linux)
+  if readelf -d "$ext_path" | grep NEEDED | grep -q libruby; then
+    echo "ERROR: ${ext_path} has a NEEDED entry for libruby:" >&2
+    readelf -d "$ext_path" | grep NEEDED >&2
+    exit 1
+  fi
+  ;;
+esac
+
 stage="tmp/native-gem/${ruby_minor}"
 mkdir -p "$stage"
-cp "lib/nosj/nosj.${dlext}" "$stage/nosj.${dlext}"
+cp "$ext_path" "$stage/nosj.${dlext}"
 echo "staged ${stage}/nosj.${dlext}"
 
 # The staged copy is the artifact; drop the live one so the next Ruby's

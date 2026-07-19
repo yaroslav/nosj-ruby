@@ -83,7 +83,7 @@ pub(crate) fn ensure_marked_shadow(slot: &mut Option<&'static mut VStackShadow>)
         }));
         let ptr = std::ptr::from_mut::<VStackShadow>(shadow).cast_const();
         let handle: Obj<ShadowHandle> = ruby.obj_wrap(ShadowHandle(ptr));
-        ruby.gc_register_mark_object(handle);
+        magnus::gc::register_mark_object(handle);
         *slot = Some(shadow);
     }
 }
