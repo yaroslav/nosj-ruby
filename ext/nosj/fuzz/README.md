@@ -26,6 +26,16 @@ RUSTFLAGS="-Clink-arg=-Wl,-undefined,dynamic_lookup" \
   -s none -- -max_total_time=300
 ```
 
+The fuzz binaries embed a Ruby VM and therefore link `libruby` (the
+one place that is correct; the extension itself never does). On Linux
+the loader resolves that soname at run time, so point it at your
+Ruby's lib dir first — macOS needs nothing, the absolute install name
+is recorded at link time:
+
+```sh
+export LD_LIBRARY_PATH="$(ruby -e 'print RbConfig::CONFIG["libdir"]')"
+```
+
 `seeds/` is the committed starting corpus; `corpus/` collects
 discoveries and stays untracked. Sanitizers stay off (`-s none`):
 Ruby's conservative GC stack scanning and ASan disagree, and the

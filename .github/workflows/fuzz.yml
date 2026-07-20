@@ -34,6 +34,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # The fuzz binaries embed a Ruby VM, so they link libruby (the one
+      # place that is correct; the extension itself must never). The
+      # Linux loader resolves that soname through LD_LIBRARY_PATH, which
+      # must point at the setup-ruby lib dir; macOS needs nothing (the
+      # absolute install name is recorded at link time).
+      - run: echo "LD_LIBRARY_PATH=$(ruby -e 'print RbConfig::CONFIG["libdir"]')" >> "$GITHUB_ENV"
       # Sanitizers stay off (-s none): Ruby's conservative GC stack
       # scanning and ASan disagree, and the parser crate's own fuzzers
       # keep the sanitizer coverage. --target is explicit because the
