@@ -1,3 +1,7 @@
+## [Unreleased]
+
+- Updated Rust dependencies.
+
 ## [0.3.2] - 2026-07-19
 
 - **IMPORTANT**—Fixed: the precompiled platform gems linked `libruby`
