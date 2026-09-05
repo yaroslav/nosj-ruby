@@ -16,6 +16,7 @@ faster than Yajl—[see Benchmarks](#benchmarks).
 - It does **byte-splicing edits**: `NOSJ.splice` changes a field inside a passing payload 10–51× faster than parse-mutate-generate, and RFC 6902 JSON Patch / RFC 7386 merge patch apply straight to the raw string.
 - It is **great to debug with**: parse errors carry line, column, and a caret snippet pointing at the break, and `NOSJ.stats` X-rays a mystery blob (depth, value counts, key histogram) faster than parsing it.
 - It accelerates a **Rails** application in both encoding and decoding.
+- It is **Ractor-safe**: call it from any Ractor on Ruby 4.0+, and parse with `freeze: true` to get shareable results.
 - It comes **precompiled** (platform gems built with per-platform optimizations,
 nothing to compile on install).
 - Otherwise, same API and option names as gem json.
@@ -299,6 +300,22 @@ NOSJ.parse(%({\n  "a": 1,\n  "b": }))
 #   e.snippet  #=>   "b": }
 #                         ^
 ```
+
+### Ractors
+
+On Ruby 4.0+, every entry point works inside a Ractor: parse and
+generate, lazy documents, partial parsing, the file APIs, NDJSON,
+patches, reformatting, and statistics.
+
+```ruby
+workers = Array.new(4) do
+  Ractor.new(payload) { |src| NOSJ.parse(src, freeze: true) }
+end
+workers.map(&:value)
+```
+
+`freeze: true` returns deeply frozen, Ractor-shareable values, so a
+document parsed in one Ractor can be handed to another without a copy.
 
 ## Benchmarks
 
