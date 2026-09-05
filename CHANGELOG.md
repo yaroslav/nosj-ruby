@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.4.0] - 2026-09-05
 
 - Ractors: on Ruby 4.0+, `NOSJ.parse`, `NOSJ.generate`, and every
   other entry point (lazy documents, partial parsing, the file APIs,
