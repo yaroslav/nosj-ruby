@@ -37,6 +37,14 @@ use magnus::{method, prelude::*, Error, Ruby};
 // "nosj/nosj"), not the package name nosj_native (see Cargo.toml).
 #[magnus::init(name = "nosj")]
 fn init(ruby: &Ruby) -> Result<(), Error> {
+    // Declared before any method exists: Ruby marks the methods defined
+    // after this call as callable from every Ractor. What backs it: the
+    // generate scratch is taken out of its thread-local for a call (see
+    // gen::GEN_SCRATCH), the key caches hold only shareable VALUEs
+    // (interned strings, static symbols), and the warm-up at the end of
+    // init resolves every lazily-initialized static on the main Ractor.
+    // SAFETY: a flag write on the VM's extension-load state.
+    unsafe { rb_sys::rb_ext_ractor_safe(true) };
     compile_info();
 
     let module = ruby.define_module("NOSJ")?;

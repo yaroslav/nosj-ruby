@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- Ractor support (Ruby 4.0+): the native extension declares Ractor
+  safety, so every `NOSJ` entry point works inside non-main Ractors
+  (each raised `Ractor::UnsafeError` before). The generator's scratch
+  is taken out of thread-local storage for the duration of a call (a
+  Ruby thread may resume on another native thread after a `to_json`
+  callback), and every lazily-resolved class and method ID is warmed
+  up at load on the main Ractor. `freeze: true` output is
+  Ractor-shareable, as before.
 - Updated Rust dependencies.
 
 ## [0.3.2] - 2026-07-19
