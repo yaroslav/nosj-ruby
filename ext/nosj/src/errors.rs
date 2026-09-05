@@ -16,7 +16,9 @@ use magnus::{Class, Error, ExceptionClass, Module, Object, RModule, RObject, Rub
 /// extension is loaded without lib/nosj.rb).
 pub(crate) fn nosj_exception(ruby: &Ruby, name: &str) -> ExceptionClass {
     let lookup = || -> Result<ExceptionClass, Error> {
-        let m: RModule = ruby.define_module("NOSJ")?;
+        // A lookup, not define_module: defining is main-Ractor work, and
+        // this runs wherever a parse fails.
+        let m: RModule = ruby.class_object().const_get("NOSJ")?;
         m.const_get(name)
     };
     lookup().unwrap_or_else(|_| ruby.exception_runtime_error())

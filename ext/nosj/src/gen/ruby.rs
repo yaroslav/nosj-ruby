@@ -37,6 +37,15 @@ fn as_json_id() -> rb_sys::ID {
         as rb_sys::ID
 }
 
+/// Resolve the `OnceLock`s here now (init, main Ractor): an initializer
+/// that enters the VM must never race between Ractors (see lib.rs), and
+/// an initialized lock never blocks again.
+pub(crate) fn warm_up() {
+    as_json_id();
+    to_json_id();
+    utf8_encindexes();
+}
+
 /// Whether `v` is a `JSON::Fragment` (pre-rendered JSON to splice
 /// verbatim: the gem accepts fragments even under `strict`, and
 /// ActiveSupport's encoder passes them through). The class is resolved

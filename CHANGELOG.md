@@ -1,3 +1,14 @@
+## [0.4.0] - 2026-09-05
+
+- Ractors: on Ruby 4.0+, `NOSJ.parse`, `NOSJ.generate`, and every
+  other entry point (lazy documents, partial parsing, the file APIs,
+  NDJSON, patches, reformatting, statistics) can be called from inside
+  a Ractor. Before this release each of them raised
+  `Ractor::UnsafeError` outside the main Ractor. Values parsed with
+  `freeze: true` are Ractor-shareable, so a document parsed in one
+  Ractor can be handed to another without copying.
+- Updated Rust dependencies.
+
 ## [0.3.2] - 2026-07-19
 
 - **IMPORTANT**—Fixed: the precompiled platform gems linked `libruby`

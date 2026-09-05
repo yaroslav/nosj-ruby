@@ -37,6 +37,14 @@ use magnus::{method, prelude::*, Error, Ruby};
 // "nosj/nosj"), not the package name nosj_native (see Cargo.toml).
 #[magnus::init(name = "nosj")]
 fn init(ruby: &Ruby) -> Result<(), Error> {
+    // Declared before any method exists: Ruby marks the methods defined
+    // after this call as callable from every Ractor. What backs it: the
+    // generate scratch is taken out of its thread-local for a call (see
+    // gen::GEN_SCRATCH), the key caches hold only shareable VALUEs
+    // (interned strings, static symbols), and the warm-up at the end of
+    // init resolves every lazily-initialized static on the main Ractor.
+    // SAFETY: a flag write on the VM's extension-load state.
+    unsafe { rb_sys::rb_ext_ractor_safe(true) };
     compile_info();
 
     let module = ruby.define_module("NOSJ")?;
@@ -104,6 +112,15 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     // its `generate` through a Ruby frame into C, so skipping our own
     // forwarder frame is a straight per-call win on small documents.
     module.define_singleton_method("generate", method!(gen::generate_entry, -1))?;
+
+    // Warm-up on the main Ractor: magnus resolves a TypedData class (and
+    // gen/ruby.rs its interned IDs) behind a blocking lazy initializer
+    // that calls into the VM, and two Ractors racing that first touch
+    // deadlock (the loser parks natively and never joins the VM barrier
+    // the winner needs).
+    let _ = <state::ShadowHandle as magnus::TypedData>::class(ruby);
+    let _ = <lazy::LazyNode as magnus::TypedData>::class(ruby);
+    gen::warm_up();
     Ok(())
 }
 
