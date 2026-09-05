@@ -104,6 +104,15 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     // its `generate` through a Ruby frame into C, so skipping our own
     // forwarder frame is a straight per-call win on small documents.
     module.define_singleton_method("generate", method!(gen::generate_entry, -1))?;
+
+    // Warm-up on the main Ractor: magnus resolves a TypedData class (and
+    // gen/ruby.rs its interned IDs) behind a blocking lazy initializer
+    // that calls into the VM, and two Ractors racing that first touch
+    // deadlock (the loser parks natively and never joins the VM barrier
+    // the winner needs).
+    let _ = <state::ShadowHandle as magnus::TypedData>::class(ruby);
+    let _ = <lazy::LazyNode as magnus::TypedData>::class(ruby);
+    gen::warm_up();
     Ok(())
 }
 

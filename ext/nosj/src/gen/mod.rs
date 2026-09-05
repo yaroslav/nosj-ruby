@@ -29,20 +29,24 @@ mod walker;
 
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use errors::raise_fail;
 use keys::GenKeyCache;
+pub(crate) use ruby::warm_up;
 use walker::Gen;
 
 /// Per-thread generate scratch: the pooled output buffer (capacity
-/// survives across calls) and the pre-escaped key cache. One
-/// thread_local, borrowed ONCE for the whole call: in a shared library
-/// every thread_local access is a `__tls_get_addr` call, and the old
-/// take/put-back shape paid two of them plus struct moves per call
-/// (measurable on 45-byte documents). A recursive generate via a user
-/// `to_json` hits the failed `try_borrow_mut` arm and runs on a fresh
-/// scratch instead of panicking the RefCell.
+/// survives across calls) and the pre-escaped key caches. A call takes
+/// the scratch OUT of the thread-local and stores it back afterwards:
+/// off the main Ractor, Ruby threads run M:N over a pool of native
+/// threads, so a thread resuming after a `to_json` / `as_json` callback
+/// may be on another native thread, where a reference into the old
+/// thread's cell would alias whatever that thread is running. An empty
+/// cell (a recursive generate holds the scratch, or a thread hop left
+/// it elsewhere) means a fresh one. The Box moves as one pointer; the
+/// cost over a plain borrow is one thread-local address lookup per
+/// call, measured at parity (feature/ractor, 2026-09).
 struct GenScratch {
     buf: Vec<u8>,
     keys: GenKeyCache,
@@ -52,12 +56,31 @@ struct GenScratch {
     html_keys: GenKeyCache,
 }
 
+impl GenScratch {
+    fn fresh() -> Box<Self> {
+        Box::new(GenScratch {
+            buf: Vec::new(),
+            keys: GenKeyCache::with_capacity(256),
+            html_keys: GenKeyCache::with_capacity(64),
+        })
+    }
+}
+
 thread_local! {
-    static GEN_SCRATCH: RefCell<GenScratch> = RefCell::new(GenScratch {
-        buf: Vec::new(),
-        keys: GenKeyCache::with_capacity(256),
-        html_keys: GenKeyCache::with_capacity(64),
-    });
+    static GEN_SCRATCH: Cell<Option<Box<GenScratch>>> = const { Cell::new(None) };
+}
+
+/// Run `f` on this thread's scratch, then store it back, replacing one a
+/// recursive generate stored meanwhile (the outermost call's is the warm
+/// one; the replaced scratch's key cache keeps its shadow, exactly as
+/// the old fallback arm's did).
+fn with_scratch<R>(f: impl FnOnce(&mut GenScratch) -> R) -> R {
+    let mut scratch = GEN_SCRATCH
+        .with(Cell::take)
+        .unwrap_or_else(GenScratch::fresh);
+    let result = f(&mut scratch);
+    GEN_SCRATCH.with(|cell| cell.set(Some(scratch)));
+    result
 }
 
 /// `NOSJ.generate(obj, opts = nil)`, registered as a variadic native
@@ -174,27 +197,18 @@ fn generate_scratched_into<R>(
     cap_hint: usize,
     finish: impl FnOnce(&Ruby, &[u8]) -> Result<R, Error>,
 ) -> Result<R, Error> {
-    GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut scratch) => {
-            let scratch = &mut *scratch;
-            let GenScratch {
-                buf,
-                keys,
-                html_keys,
-                ..
-            } = scratch;
-            let keys = if cfg.mode == nosj::emit::EscapeMode::HtmlSafe {
-                html_keys
-            } else {
-                keys
-            };
-            generate_with(ruby, obj, cfg, cap_hint, buf, keys, finish)
-        }
-        Err(_) => {
-            let mut buf = Vec::new();
-            let mut keys = GenKeyCache::default();
-            generate_with(ruby, obj, cfg, cap_hint, &mut buf, &mut keys, finish)
-        }
+    with_scratch(|scratch| {
+        let GenScratch {
+            buf,
+            keys,
+            html_keys,
+        } = scratch;
+        let keys = if cfg.mode == nosj::emit::EscapeMode::HtmlSafe {
+            html_keys
+        } else {
+            keys
+        };
+        generate_with(ruby, obj, cfg, cap_hint, buf, keys, finish)
     })
 }
 
@@ -258,10 +272,7 @@ pub(crate) fn emit_into(
     cfg: &opts::GenConfig,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut scratch) => emit_one(ruby, obj, cfg, out, &mut scratch.keys),
-        Err(_) => emit_one(ruby, obj, cfg, out, &mut GenKeyCache::default()),
-    })
+    with_scratch(|scratch| emit_one(ruby, obj, cfg, out, &mut scratch.keys))
 }
 
 /// Formatting strings holding a newline (or carriage return) would
@@ -313,17 +324,9 @@ pub(crate) fn generate_lines_bytes_into<R>(
             "formatting options containing newlines would break JSON Lines framing",
         ));
     }
-    GEN_SCRATCH.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut scratch) => {
-            let scratch = &mut *scratch;
-            let GenScratch { buf, keys, .. } = scratch;
-            generate_lines_with(ruby, values, cfg, cap_hint, buf, keys, finish)
-        }
-        Err(_) => {
-            let mut buf = Vec::new();
-            let mut keys = GenKeyCache::default();
-            generate_lines_with(ruby, values, cfg, cap_hint, &mut buf, &mut keys, finish)
-        }
+    with_scratch(|scratch| {
+        let GenScratch { buf, keys, .. } = scratch;
+        generate_lines_with(ruby, values, cfg, cap_hint, buf, keys, finish)
     })
 }
 
