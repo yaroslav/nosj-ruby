@@ -11,24 +11,20 @@
   splice read freed memory, copying unrelated heap bytes into the
   result or crashing. All values are now generated before the source
   is read.
-- Fixed `NOSJ.lazy` reading freed memory when the source is a frozen
-  String subclass (such as `ActiveSupport::SafeBuffer`) or a frozen
-  string carrying instance variables, and it is later deduplicated
-  with `-str`: Ruby swaps such a string's buffer, and lazy nodes kept
-  reading the old one (wrong values, or a crash).
-- The same for `NOSJ.each_line` over such a source when the block
-  deduplicates it between lines.
-- Fixed a memory leak in `NOSJ.generate`: when an object's
-  `respond_to?` or `respond_to_missing?` raised during generation, the
-  exception bypassed the generator's cleanup and leaked its output
-  buffer (megabytes per call after large documents). The exception
-  still propagates unchanged.
-- The same leak when an encoding-conversion error's `to_s` raised
-  while `NOSJ.generate` built its `NOSJ::GeneratorError`.
-- The same leak when an autoloaded `JSON::Fragment` raised while
-  loading during a strict or Rails-mode generate.
-- The same leak in `NOSJ.write_file` when constructing the `Errno`
-  exception for a failed write raised.
+- Fixed `NOSJ.lazy` and `NOSJ.each_line` reading freed memory when the
+  source is a frozen String subclass (such as
+  `ActiveSupport::SafeBuffer`) or a frozen string carrying instance
+  variables, and it is deduplicated with `-str` while the lazy
+  document is alive or between lines: Ruby swaps such a string's
+  buffer, and the old one kept being read (wrong values, or a crash).
+- Fixed a memory leak in `NOSJ.generate` and `NOSJ.write_file`: an
+  exception raised by user code the generator calls bypassed its
+  cleanup and leaked its output buffer (megabytes per call after large
+  documents). Affected: a raising `respond_to?` or
+  `respond_to_missing?`, a raising `to_s` on an encoding-conversion
+  error, a raising autoload of `JSON::Fragment` (strict and Rails
+  modes), and a raising `Errno` constructor for a failed write. The
+  exception still propagates unchanged.
 - Fixed: after a `NoMemoryError` in the middle of a parse (or
   `minify`/`reformat`), the next call on that thread aborted the whole
   process. Per-thread parser state is now recovered instead.
