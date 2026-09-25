@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.5.0] - 2026-09-25
 
 **json 3.0 compatibility.** nosj now matches the behavior of the json
 gem 3.0, and stays compatible with both the json 2.x and 3.0
