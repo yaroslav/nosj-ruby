@@ -42,9 +42,8 @@ RSpec.describe "NOSJ.valid?" do
     # Objects small (pairwise compare), mid-sized (seen-table), and large
     # (sort) take different close-time checks.
     [3, 40, 300].each do |size|
-      keys = (1..size).map { %("k#{_1}": #{_1}) }
-      unique = "{#{keys.join(",")}}"
-      repeated = "{#{keys.join(",")}, \"k#{size / 2}\": 0}"
+      unique = keyed_object(size)
+      repeated = keyed_object(size, repeat: "k#{size / 2}")
       expect(NOSJ.valid?(unique)).to be(true), "#{size} unique"
       expect(NOSJ.valid?(repeated)).to be(false), "#{size} repeated"
       expect(NOSJ.valid?(repeated, allow_duplicate_key: true)).to be(true)

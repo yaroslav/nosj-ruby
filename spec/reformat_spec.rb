@@ -31,9 +31,9 @@ RSpec.describe "NOSJ.minify / NOSJ.reformat" do
     expect { NOSJ.minify(%({"a": 1, "a": 2})) }
       .to raise_error(NOSJ::ParserError, 'duplicate key "a" at byte 0')
     expect(NOSJ.minify(%({"a": 1, "a": 2}), allow_duplicate_key: true)).to eq(%({"a":1,"a":2}))
-    keys = (1..40).map { %("k#{_1}": #{_1}) }
-    expect { NOSJ.minify("{#{keys.join(",")}, \"k40\": 0}") }.to raise_error(NOSJ::ParserError)
-    expect(NOSJ.minify("{#{keys.join(",")}}")).to eq(NOSJ.generate(NOSJ.parse("{#{keys.join(",")}}")))
+    expect { NOSJ.minify(keyed_object(40, repeat: "k40")) }.to raise_error(NOSJ::ParserError)
+    unique = keyed_object(40)
+    expect(NOSJ.minify(unique)).to eq(NOSJ.generate(NOSJ.parse(unique)))
   end
 
   it "preserves big-integer digits verbatim" do

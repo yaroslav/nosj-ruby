@@ -46,11 +46,10 @@ RSpec.describe "NOSJ.parse" do
     end
 
     it "detects repeats in large objects and symbolized keys too" do
-      keys = (1..40).map { %("k#{_1}": #{_1}) }
-      big = "{#{keys.join(",")}, \"k7\": 0}"
+      big = keyed_object(40, repeat: "k7")
       expect { NOSJ.parse(big) }.to raise_error(NOSJ::ParserError, /duplicate key "k7"/)
       expect { NOSJ.parse(big, symbolize_names: true) }.to raise_error(NOSJ::ParserError)
-      expect(NOSJ.parse("{#{keys.join(",")}}").size).to eq(40)
+      expect(NOSJ.parse(keyed_object(40)).size).to eq(40)
     end
   end
 
