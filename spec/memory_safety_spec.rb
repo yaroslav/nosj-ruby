@@ -144,6 +144,34 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "a raising JSON::Fragment autoload" do
+    %w[strict rails].each do |mode|
+      it "propagates from the #{mode}-mode fragment check without leaking the scratch" do
+        expect_ok(<<~RUBY)
+          require "tmpdir"
+          dir = Dir.mktmpdir
+          File.write(File.join(dir, "fragment_boom.rb"), 'raise ArgumentError, "boom in autoload"')
+          # nosj never loads the json gem itself, so JSON::Fragment can
+          # be an autoload whose file raises on every attempt.
+          module JSON; end
+          JSON.autoload(:Fragment, File.join(dir, "fragment_boom.rb"))
+          require "nosj"
+          def hostile_call
+            #{(mode == "strict") ? "NOSJ.generate([Object.new], strict: true)" : "NOSJ.generate_rails_native([Object.new], true, true)"}
+          end
+          begin
+            hostile_call
+            raise "no exception"
+          rescue ArgumentError => e
+            raise "wrong exception: \#{e.message}" unless e.message == "boom in autoload"
+          end
+          #{leak_check}
+          puts "ALL-OK"
+        RUBY
+      end
+    end
+  end
+
   describe "NOSJ.lazy over a frozen source" do
     # Deduplicating a frozen String subclass (or one carrying an ivar)
     # swaps its heap buffer and frees the old one; lazy nodes borrow

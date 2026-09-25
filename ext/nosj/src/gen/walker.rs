@@ -285,7 +285,7 @@ impl Gen<'_> {
             return self.emit_rails_fallback::<PRETTY>(raw, depth);
         }
         if self.cfg.strict {
-            if is_json_fragment(raw) {
+            if self.is_fragment(raw)? {
                 return self.splice_to_json(raw);
             }
             let name = unsafe {
@@ -328,6 +328,14 @@ impl Gen<'_> {
         }
     }
 
+    /// Whether `raw` is a `JSON::Fragment`; a raise from resolving the
+    /// class (an autoload) becomes this walk's failure.
+    fn is_fragment(&mut self, raw: VALUE) -> Result<bool, ()> {
+        is_json_fragment(raw).map_err(|exc| {
+            self.fail = Some(GenFail::Reraise(exc));
+        })
+    }
+
     /// Splice `raw`'s `to_json` result verbatim: the JSON::Fragment
     /// path (pre-rendered JSON, trusted like the gem trusts it).
     fn splice_to_json(&mut self, raw: VALUE) -> Result<(), ()> {
@@ -363,7 +371,7 @@ impl Gen<'_> {
         raw: VALUE,
         depth: usize,
     ) -> Result<(), ()> {
-        if is_json_fragment(raw) {
+        if self.is_fragment(raw)? {
             return self.splice_to_json(raw);
         }
         match protected_as_json(raw) {

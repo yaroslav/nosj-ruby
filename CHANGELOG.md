@@ -23,6 +23,8 @@
   still propagates unchanged.
 - The same leak when an encoding-conversion error's `to_s` raised
   while `NOSJ.generate` built its `NOSJ::GeneratorError`.
+- The same leak when an autoloaded `JSON::Fragment` raised while
+  loading during a strict or Rails-mode generate.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

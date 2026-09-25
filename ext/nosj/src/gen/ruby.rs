@@ -65,19 +65,21 @@ pub(crate) fn warm_up() {
 /// lazily and cached only on success, so a json gem loaded after the
 /// first generate is still found; a fragment instance existing implies
 /// its class does. The cached VALUE is a constant of the JSON module,
-/// so it can never be collected.
-pub(super) fn is_json_fragment(v: VALUE) -> bool {
+/// so it can never be collected. The lookup is protected: resolving
+/// the constant can run an autoload (user code), whose raise
+/// propagates like any constant reference's would.
+pub(super) fn is_json_fragment(v: VALUE) -> Result<bool, Error> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static FRAGMENT: AtomicUsize = AtomicUsize::new(0);
     let mut cls = FRAGMENT.load(Ordering::Relaxed);
     if cls == 0 {
-        cls = resolve_json_fragment();
+        cls = magnus::rb_sys::protect(|| resolve_json_fragment() as VALUE)? as usize;
         if cls == 0 {
-            return false;
+            return Ok(false);
         }
         FRAGMENT.store(cls, Ordering::Relaxed);
     }
-    unsafe { rb_sys::rb_obj_is_kind_of(v, cls as VALUE) != QFALSE }
+    Ok(unsafe { rb_sys::rb_obj_is_kind_of(v, cls as VALUE) != QFALSE })
 }
 
 fn resolve_json_fragment() -> usize {
