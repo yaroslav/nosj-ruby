@@ -266,6 +266,36 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "NOSJ.each_line over a frozen source" do
+    # The block runs between lines; deduplicating the frozen non-plain
+    # source there swaps its buffer, so each line must be read fresh.
+    it "keeps reading the live buffer after the block runs -str on the source" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        payload = "v" * 900
+        %w[subclass ivar].each do |flavor|
+          20.times do
+            text = (1..4).map { |i| %({"i": \#{i}, "k": "\#{payload}"}) }.join("\\n") + ""
+            src = (flavor == "subclass") ? Class.new(String).new(text) : text.tap { _1.instance_variable_set(:@tag, 1) }
+            src.freeze
+            text = nil
+            seen = []
+            NOSJ.each_line(src) do |v|
+              seen << v
+              next unless seen.size == 1
+              -src
+              GC.start
+              $churn = Array.new(3000) { "Q" * src.bytesize }
+            end
+            expected = (1..4).map { |i| {"i" => i, "k" => payload} }
+            raise "corrupted: \#{seen.size} lines" unless seen == expected
+          end
+        end
+        puts "ALL-OK"
+      RUBY
+    end
+  end
+
   describe "NOSJ.splice with values whose to_json misbehaves" do
     # Each value's to_json attacks what splice holds while generating:
     # the source bytes, or the only Ruby reference to a later value.

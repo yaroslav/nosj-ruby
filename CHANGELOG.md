@@ -16,6 +16,8 @@
   string carrying instance variables, and it is later deduplicated
   with `-str`: Ruby swaps such a string's buffer, and lazy nodes kept
   reading the old one (wrong values, or a crash).
+- The same for `NOSJ.each_line` over such a source when the block
+  deduplicates it between lines.
 - Fixed a memory leak in `NOSJ.generate`: when an object's
   `respond_to?` or `respond_to_missing?` raised during generation, the
   exception bypassed the generator's cleanup and leaked its output
