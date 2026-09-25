@@ -87,6 +87,48 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "hashes mutated during generation" do
+    # The walker iterates hashes with a raw rb_hash_foreach, and Ruby
+    # rejects the mutations that would invalidate that iteration
+    # (rehash, compare_by_identity, new keys, replace) inside the
+    # mutating call itself, i.e. in the user's protected callback; the
+    # legal ones (delete, clear, shift) are handled by the iterator.
+    # Pinned against the json gem for both table layouts.
+    it "matches the json gem for every mutation a callback can make" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        require "json"
+        MUT = {
+          "clear" => ->(h) { h.clear }, "delete other" => ->(h) { h.delete(h.keys.last) },
+          "rehash" => ->(h) { h.rehash }, "compare_by_identity" => ->(h) { h.compare_by_identity },
+          "add key" => ->(h) { h["zz"] = 1 }, "replace" => ->(h) { h.replace({"x" => 1}) },
+          "shift" => ->(h) { h.shift }, "delete_if all" => ->(h) { h.delete_if { true } },
+          "clear + GC" => ->(h) { h.clear; GC.start }
+        }
+        class Mut
+          def initialize(h, f) = (@h, @f = h, f)
+          def to_json(*) = (@f.call(@h); '"m"')
+        end
+        def run(gen, size, f)
+          h = (1..size).to_h { ["k\#{_1}", "v\#{_1}"] }
+          h["k2"] = Mut.new(h, f)
+          gen.call(h)
+        rescue => e
+          "\#{e.class}: \#{e.message}"
+        end
+        [3, 20].each do |size| # AR table (<= 8 entries) and ST table
+          MUT.each do |name, f|
+            ours = run(NOSJ.method(:generate), size, f)
+            gem = run(JSON.method(:generate), size, f)
+            raise "\#{size}/\#{name}: \#{ours.inspect} vs \#{gem.inspect}" unless ours == gem
+          end
+        end
+        raise "broken after" unless NOSJ.generate({"a" => 1}) == '{"a":1}'
+        puts "ALL-OK"
+      RUBY
+    end
+  end
+
   describe "raising respond_to? during the to_json fallback" do
     it "propagates the exception without leaking the generate scratch" do
       expect_ok(<<~RUBY)
