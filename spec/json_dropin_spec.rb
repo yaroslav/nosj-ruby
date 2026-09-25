@@ -2,22 +2,8 @@
 
 # The drop-in patches JSON globally, so every assertion runs in a
 # subprocess. The rest of the suite must keep comparing against the
-# pristine json gem.
+# pristine json gem (run_script/expect_ok: spec/support/subprocess.rb).
 RSpec.describe "require 'nosj/json' drop-in" do
-  def run_script(script)
-    out = IO.popen(
-      [RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-e", script],
-      err: [:child, :out], &:read
-    )
-    [$?.success?, out]
-  end
-
-  def expect_ok(script)
-    ok, out = run_script(script)
-    expect(ok).to be(true), out
-    expect(out).to include("ALL-OK")
-  end
-
   it "reroutes the supported fast paths and matches the original gem byte-for-byte" do
     corpus = File.expand_path("../benchmark/twitter.json", __dir__)
     expect_ok(<<~RUBY)

@@ -1,23 +1,20 @@
 # frozen_string_literal: true
 
 # Hostile callbacks: user code (to_json, to_s, respond_to?, exception
-# constructors, autoloads) running while the extension holds raw Ruby
-# state. Every case runs in a subprocess: a regression here is a
-# segfault or heap corruption that must fail one example, not take the
-# whole suite down, and several cases patch global classes.
+# constructors, autoloads, blocks) running while the extension holds raw
+# Ruby state. Every case runs in a subprocess (spec/support/
+# subprocess.rb): a regression here is a segfault or heap corruption
+# that must fail one example, not take the whole suite down, and
+# several cases patch global classes.
 RSpec.describe "memory safety under hostile callbacks" do
-  def run_script(script)
-    out = IO.popen(
-      [RbConfig.ruby, "-I", File.expand_path("../lib", __dir__), "-e", script],
-      err: [:child, :out], &:read
-    )
-    [$?.success?, out]
-  end
-
-  def expect_ok(script)
-    ok, out = run_script(script)
-    expect(ok).to be(true), out
-    expect(out).to include("ALL-OK"), out
+  # Frozen strings whose heap buffer `-str` (deduplication) swaps for a
+  # shared one, freeing the old: String subclasses and strings carrying
+  # ivars. Values are script expressions over a local `text`.
+  def self.non_plain_sources
+    {
+      "subclass" => "Class.new(String).new(text)",
+      "ivar" => "text.tap { _1.instance_variable_set(:@tag, 1) }"
+    }
   end
 
   # A Ruby exception that longjmps over the generator's Rust frames
@@ -50,6 +47,20 @@ RSpec.describe "memory safety under hostile callbacks" do
         growth = rss_mb - before
         raise "leaked \#{growth.round} MB across 40 raising calls" if growth > 40
       end
+    RUBY
+  end
+
+  # Script snippet: `hostile_call` must raise `klass` with `message`
+  # (the user's exception, unchanged), and must not leak on repeat.
+  def hostile_check(klass, message)
+    <<~RUBY
+      begin
+        hostile_call
+        raise "no exception"
+      rescue #{klass} => e
+        raise "wrong exception: \#{e.message}" unless e.message == #{message.inspect}
+      end
+      #{leak_check}
     RUBY
   end
 
@@ -135,14 +146,8 @@ RSpec.describe "memory safety under hostile callbacks" do
         require "nosj"
         class RespondBoom; def respond_to?(*) = raise("boom in respond_to?"); end
         def hostile_call = NOSJ.generate([RespondBoom.new])
-        begin
-          hostile_call
-          raise "no exception"
-        rescue RuntimeError => e
-          raise "wrong exception: \#{e.message}" unless e.message == "boom in respond_to?"
-        end
+        #{hostile_check("RuntimeError", "boom in respond_to?")}
         raise "broken after" unless NOSJ.generate({"a" => [1]}) == '{"a":[1]}'
-        #{leak_check}
         puts "ALL-OK"
       RUBY
     end
@@ -152,13 +157,7 @@ RSpec.describe "memory safety under hostile callbacks" do
         require "nosj"
         class MissingBoom; def respond_to_missing?(*) = raise("boom in respond_to_missing?"); end
         def hostile_call = NOSJ.generate({"k" => MissingBoom.new})
-        begin
-          hostile_call
-          raise "no exception"
-        rescue RuntimeError => e
-          raise "wrong exception: \#{e.message}" unless e.message == "boom in respond_to_missing?"
-        end
-        #{leak_check}
+        #{hostile_check("RuntimeError", "boom in respond_to_missing?")}
         puts "ALL-OK"
       RUBY
     end
@@ -174,20 +173,17 @@ RSpec.describe "memory safety under hostile callbacks" do
           def to_s = raise(ArgumentError, "boom in to_s")
         end
         def hostile_call = NOSJ.generate(["\\xFF\\xFE".b])
-        begin
-          hostile_call
-          raise "no exception"
-        rescue ArgumentError => e
-          raise "wrong exception: \#{e.message}" unless e.message == "boom in to_s"
-        end
-        #{leak_check}
+        #{hostile_check("ArgumentError", "boom in to_s")}
         puts "ALL-OK"
       RUBY
     end
   end
 
   describe "a raising JSON::Fragment autoload" do
-    %w[strict rails].each do |mode|
+    {
+      "strict" => "NOSJ.generate([Object.new], strict: true)",
+      "rails" => "NOSJ.generate_rails_native([Object.new], true, true)"
+    }.each do |mode, call|
       it "propagates from the #{mode}-mode fragment check without leaking the scratch" do
         expect_ok(<<~RUBY)
           require "tmpdir"
@@ -198,16 +194,8 @@ RSpec.describe "memory safety under hostile callbacks" do
           module JSON; end
           JSON.autoload(:Fragment, File.join(dir, "fragment_boom.rb"))
           require "nosj"
-          def hostile_call
-            #{(mode == "strict") ? "NOSJ.generate([Object.new], strict: true)" : "NOSJ.generate_rails_native([Object.new], true, true)"}
-          end
-          begin
-            hostile_call
-            raise "no exception"
-          rescue ArgumentError => e
-            raise "wrong exception: \#{e.message}" unless e.message == "boom in autoload"
-          end
-          #{leak_check}
+          def hostile_call = #{call}
+          #{hostile_check("ArgumentError", "boom in autoload")}
           puts "ALL-OK"
         RUBY
       end
@@ -222,35 +210,29 @@ RSpec.describe "memory safety under hostile callbacks" do
         class Errno::ENOENT
           def initialize(*) = raise(ArgumentError, "boom in Errno#initialize")
         end
-        missing = File.join(Dir.mktmpdir, "no", "such", "dir", "x.json")
-        [-> { NOSJ.load_file(missing) }, -> { NOSJ.write_file(missing, [1]) }].each do |call|
-          call.call
-          raise "no exception"
-        rescue ArgumentError => e
-          raise "wrong exception: \#{e.message}" unless e.message == "boom in Errno#initialize"
-        end
+        MISSING = File.join(Dir.mktmpdir, "no", "such", "dir", "x.json")
+        def hostile_call = NOSJ.load_file(MISSING)
+        #{hostile_check("ArgumentError", "boom in Errno#initialize")}
         # write_file reports the I/O error from inside the generate
         # scratch, so an escaping raise would leak the warm buffer.
-        define_method(:hostile_call) { NOSJ.write_file(missing, [1]) }
-        #{leak_check}
+        def hostile_call = NOSJ.write_file(MISSING, [1])
+        #{hostile_check("ArgumentError", "boom in Errno#initialize")}
         puts "ALL-OK"
       RUBY
     end
   end
 
   describe "NOSJ.lazy over a frozen source" do
-    # Deduplicating a frozen String subclass (or one carrying an ivar)
-    # swaps its heap buffer and frees the old one; lazy nodes borrow
-    # frozen sources zero-copy, so they must follow the swap.
-    %w[subclass ivar].each do |flavor|
+    # Lazy nodes borrow frozen sources zero-copy, so they must follow a
+    # buffer swap.
+    non_plain_sources.each do |flavor, source|
       it "keeps reading the live buffer after -str on a frozen #{flavor} string" do
         expect_ok(<<~RUBY)
           require "nosj"
           payload = "v" * 4000
           10.times do
             text = %({"a": [1, 2, 3], "k": "\#{payload}", "z": 9}) + ""
-            src = #{(flavor == "subclass") ? "Class.new(String).new(text)" : "text.tap { _1.instance_variable_set(:@tag, 1) }"}
-            src.freeze
+            src = #{source}.freeze
             text = nil
             doc = NOSJ.lazy(src)
             -src
@@ -267,17 +249,16 @@ RSpec.describe "memory safety under hostile callbacks" do
   end
 
   describe "NOSJ.each_line over a frozen source" do
-    # The block runs between lines; deduplicating the frozen non-plain
-    # source there swaps its buffer, so each line must be read fresh.
-    it "keeps reading the live buffer after the block runs -str on the source" do
-      expect_ok(<<~RUBY)
-        require "nosj"
-        payload = "v" * 900
-        %w[subclass ivar].each do |flavor|
+    # The block runs between lines, so each line must be read fresh.
+    non_plain_sources.each do |flavor, source|
+      it "keeps reading the live buffer after the block runs -str on a frozen #{flavor} string" do
+        expect_ok(<<~RUBY)
+          require "nosj"
+          payload = "v" * 900
+          expected = (1..4).map { |i| {"i" => i, "k" => payload} }
           20.times do
-            text = (1..4).map { |i| %({"i": \#{i}, "k": "\#{payload}"}) }.join("\\n") + ""
-            src = (flavor == "subclass") ? Class.new(String).new(text) : text.tap { _1.instance_variable_set(:@tag, 1) }
-            src.freeze
+            text = expected.map { NOSJ.generate(_1) }.join("\\n") + ""
+            src = #{source}.freeze
             text = nil
             seen = []
             NOSJ.each_line(src) do |v|
@@ -287,12 +268,11 @@ RSpec.describe "memory safety under hostile callbacks" do
               GC.start
               $churn = Array.new(3000) { "Q" * src.bytesize }
             end
-            expected = (1..4).map { |i| {"i" => i, "k" => payload} }
             raise "corrupted: \#{seen.size} lines" unless seen == expected
           end
-        end
-        puts "ALL-OK"
-      RUBY
+          puts "ALL-OK"
+        RUBY
+      end
     end
   end
 
@@ -302,7 +282,7 @@ RSpec.describe "memory safety under hostile callbacks" do
     # After the attack, GC frees what lost its references, and live
     # churn then reuses both freed object slots ("RRR" strings) and
     # freed buffers ("QQQ..."), so a stale read shows up in the output.
-    def splice_script(attack, source_setup)
+    def splice_script(attack, source_setup, expected: "EXPECTED")
       <<~RUBY
         require "nosj"
         PAD = "p" * 5000
@@ -322,43 +302,50 @@ RSpec.describe "memory safety under hostile callbacks" do
           edits["/a"] = Hostile.new { #{attack} }
           edits["/c"] = Object.new.tap { |o| def o.to_json(*) = "3" }
           out = NOSJ.splice(src, edits)
-          raise "corrupted: \#{out[0, 40].inspect}" unless out == EXPECTED
+          raise "corrupted: \#{out[0, 40].inspect}" unless out == #{expected}
         end
         puts "ALL-OK"
       RUBY
     end
 
     it "is unaffected by a callback that clears the edits hash" do
-      expect_ok(splice_script("edits.clear", "src = EXPECTED.dup"))
+      # 200 later values, so the few a stale stack slot keeps alive
+      # cannot hide the rest. Every source value already equals what the
+      # edits render: clearing mid-iteration ends it (no further edits
+      # apply), so any applied subset leaves the same output, and only
+      # corruption can change it.
+      expect_ok(<<~RUBY)
+        require "nosj"
+        keys = (0...200).map { "k\#{_1}" }
+        src = "{" + keys.map { %("\#{_1}": 3) }.join(", ") + "}"
+        5.times do
+          edits = {}
+          attack = Object.new
+          attack.define_singleton_method(:to_json) do |*|
+            edits.clear
+            GC.start
+            $churn = Array.new(20_000) { "R" * 3 }
+            "3"
+          end
+          edits["/k0"] = attack
+          keys.drop(1).each { |k| edits["/\#{k}"] = Object.new.tap { |o| def o.to_json(*) = "3" } }
+          out = NOSJ.splice(src, edits)
+          raise "corrupted: \#{out[0, 60].inspect}" unless out == src
+        end
+        puts "ALL-OK"
+      RUBY
     end
 
     it "never reads a source buffer a callback reallocated" do
-      ok, out = run_script(<<~RUBY)
-        require "nosj"
-        pad = "p" * 5000
-        src = %({"a": 1, "b": "\#{pad}", "c": 3})
-        attack = Object.new
-        attack.define_singleton_method(:to_json) do |*|
-          src.replace(%({"a": 0, "c": 0}))
-          Array.new(3000) { "Q" * 5100 }
-          GC.start
-          "1"
-        end
-        out = NOSJ.splice(src, "/a" => attack, "/c" => 3)
-        raise "leaked heap bytes: \#{out[0, 40].inspect}" if out.include?("QQQQ")
-        puts out
-        puts "ALL-OK"
-      RUBY
-      expect(ok).to be(true), out
-      expect(out).to include("ALL-OK"), out
       # The edits land on the document as it stands after the callbacks.
-      expect(out).to include(%({"a": 1, "c": 3}))
+      expect_ok(splice_script(%(src.replace('{"a": 0, "c": 0}')), "src = EXPECTED.dup",
+        expected: %('{"a": 1, "c": 3}')))
     end
 
     it "survives a frozen String subclass whose buffer is swapped by deduplication" do
       # Built from an unretained temporary: deduplication frees the
       # buffer only when nothing else shares it.
-      expect_ok(splice_script("-src", "src = Class.new(String).new(EXPECTED + \"\").freeze"))
+      expect_ok(splice_script("-src", %(src = Class.new(String).new(EXPECTED + "").freeze)))
     end
   end
 end
