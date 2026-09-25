@@ -102,6 +102,22 @@ RSpec.describe "NOSJ.generate" do
     expect(NOSJ.generate(value)).to eq('{"cached":{"pre":"rendered"}}')
   end
 
+  it "raises json 3's ArgumentError for unknown options, and for unsupported ones unless falsy" do
+    expect { NOSJ.generate([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.pretty_generate([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.generate(["/"], escape_slash: true) }
+      .to raise_error(ArgumentError, "unknown keyword: escape_slash")
+    expect { NOSJ.generate([1], symbolize_names: true) }
+      .to raise_error(ArgumentError, "unknown keyword: symbolize_names")
+    expect { NOSJ.generate_lines([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.splice("[1]", {"/0" => 2}, bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    %i[sort_keys as_json].each do |opt|
+      expect { NOSJ.generate([1], opt => true) }
+        .to raise_error(ArgumentError, "NOSJ does not support the #{opt} option")
+      expect(NOSJ.generate([1], opt => false)).to eq("[1]")
+    end
+  end
+
   describe "keys that render alike (json 3 semantics)" do
     # json 3's rule: only a String or Symbol key in a hash whose first key
     # had another kind triggers the check (keys of one kind cannot

@@ -86,10 +86,13 @@ module NOSJ
   # Parses a JSON document, JSON.parse-compatible: same values, same
   # option names, same behavior, byte-for-byte.
   #
-  # The +json+ gem's legacy object-deserialization options
-  # (+object_class+, +array_class+, +decimal_class+,
-  # +create_additions+) are deliberately unsupported and raise
-  # ArgumentError.
+  # Options follow json 3: an unknown key raises ArgumentError
+  # (<code>unknown keyword: foo</code>). The json options nosj does not
+  # implement (+object_class+, +array_class+, +decimal_class+,
+  # +on_load+, +create_additions+, +allow_comments+,
+  # +allow_control_characters+, +allow_invalid_escape+) raise
+  # ArgumentError unless falsy, since their falsy default is nosj's
+  # behavior.
   #
   # @example
   #   NOSJ.parse('{"a":[1,true]}')                      #=> {"a" => [1, true]}
@@ -105,7 +108,7 @@ module NOSJ
   #   holds a lone surrogate (+"\udc00"+), or is not UTF-8; carries the
   #   failure position ({ParserError#line} and friends)
   # @raise [NestingError] when nesting exceeds +max_nesting+
-  # @raise [ArgumentError] for unsupported options
+  # @raise [ArgumentError] for unknown or unsupported options
   def self.parse(source, opts = nil)
     parse_native(source, opts)
   end
@@ -121,15 +124,18 @@ module NOSJ
   #   @param obj [Object] the value tree to serialize
   #   @param opts [Hash, nil] +indent+, +space+, +space_before+,
   #     +object_nl+, +array_nl+, +max_nesting+ (Integer or +false+),
-  #     +allow_nan+, +ascii_only+, +script_safe+ (alias +escape_slash+),
-  #     +strict+, +depth+, +buffer_initial_length+,
-  #     +allow_duplicate_key+ (json 3 semantics: keys that render alike,
-  #     like <code>"a"</code> and <code>:a</code>, raise unless true)
+  #     +allow_nan+, +ascii_only+, +script_safe+, +strict+, +depth+,
+  #     +buffer_initial_length+, +allow_duplicate_key+ (json 3
+  #     semantics: keys that render alike, like <code>"a"</code> and
+  #     <code>:a</code>, raise unless true). As in json 3, an unknown
+  #     key raises (+escape_slash+ is gone: use +script_safe+), and the
+  #     unimplemented +sort_keys+ and +as_json+ raise unless falsy.
   #   @return [String] the JSON document
   #   @raise [GeneratorError] for non-finite floats without +allow_nan+,
   #     unsupported objects under +strict+, keys that render alike, or
   #     broken string encodings
   #   @raise [NestingError] when nesting exceeds +max_nesting+
+  #   @raise [ArgumentError] for unknown or unsupported options
 
   # Generates human-readable JSON, JSON.pretty_generate-compatible
   # (two-space indent, newlines between elements). Options override the
@@ -161,7 +167,7 @@ module NOSJ
   # @param source [String] the JSON document
   # @param opts [Hash, nil] same options as {.parse}
   # @return [Boolean]
-  # @raise [ArgumentError] for unsupported options
+  # @raise [ArgumentError] for unknown or unsupported options
   def self.valid?(source, opts = nil)
     valid_native(source, opts)
   end

@@ -14,15 +14,16 @@
 
 use std::cell::Cell;
 
-use magnus::value::ReprValue;
 use magnus::{Error, RString, Ruby, Value};
 use nosj::{FloatFormat, WriteOptions, Writer};
 
 use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
-use crate::gen::opts::{parse_gen_opts, GenConfig, DEFAULT_CONFIG};
+use crate::gen::opts::{read_gen_opts, GenConfig, DEFAULT_CONFIG};
+use crate::opt_reader::OptReader;
 use crate::parse::{
-    duplicate_key_error, lone_surrogate_error, parse_native_opts, utf8_input, ParseNativeOpts,
+    duplicate_key_error, lone_surrogate_error, options_hash, read_parse_opts, utf8_input,
+    ParseNativeOpts,
 };
 use crate::patch::finish_string;
 use crate::sink::{DupKeys, SinkAbort};
@@ -181,14 +182,21 @@ struct ReformatOpts {
 }
 
 impl ReformatOpts {
+    /// One reader over both option sets, so a key either reads is known.
     fn decode(ruby: &Ruby, opts: Value) -> Result<Self, Error> {
+        let Some(h) = options_hash(ruby, opts)? else {
+            return Ok(Self {
+                parse: ParseNativeOpts::default(),
+                generate: None,
+            });
+        };
+        let mut reader = OptReader::new(ruby, h);
+        let parse = read_parse_opts(&mut reader)?;
+        let (generate, _) = read_gen_opts(&mut reader)?;
+        reader.finish()?;
         Ok(Self {
-            parse: parse_native_opts(ruby, opts)?,
-            generate: if opts.is_nil() {
-                None
-            } else {
-                Some(parse_gen_opts(ruby, opts)?.0)
-            },
+            parse,
+            generate: Some(generate),
         })
     }
 }

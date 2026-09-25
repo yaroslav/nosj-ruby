@@ -4,6 +4,8 @@
 //! - `parse.rs`: whole-document entry points (parse, valid?, the
 //!   GVL-releasing indexed parse) plus shared option decoding and
 //!   input gating.
+//! - `opt_reader.rs`: options-hash reading with json 3's unknown-key
+//!   rule, shared by the parse and generate decoders.
 //! - `pointer.rs`: partial parsing (dig, at_pointer, batch forms).
 //! - `lazy.rs`: lazy documents (NOSJ.lazy nodes resolving access on
 //!   demand over shared document bytes).
@@ -24,6 +26,7 @@ pub mod gen;
 pub mod lazy;
 pub mod lines;
 pub mod locate;
+pub mod opt_reader;
 pub mod parse;
 pub mod patch;
 pub mod pointer;

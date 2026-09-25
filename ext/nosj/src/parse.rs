@@ -7,6 +7,7 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::{nesting_error, parser_error, parser_error_at};
+use crate::opt_reader::{Opt, OptReader};
 use crate::sink::{DupKeys, NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
 use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
 
@@ -68,32 +69,49 @@ impl Default for ParseNativeOpts {
     }
 }
 
-/// Decode a JSON.parse-compatible options hash: symbolize_names, freeze,
-/// max_nesting, allow_nan, allow_trailing_comma. Unsupported gem options
-/// (object_class, array_class, decimal_class, create_additions) raise.
+/// Decode a JSON.parse-compatible options hash (see [`read_parse_opts`]);
+/// keys it does not read raise ArgumentError, like json 3.
 pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeOpts, Error> {
-    use magnus::value::ReprValue;
-    use magnus::RHash;
-
-    let mut out = ParseNativeOpts::default();
-    if opts.is_nil() {
-        return Ok(out);
-    }
-    let h = RHash::from_value(opts)
-        .ok_or_else(|| Error::new(ruby.exception_arg_error(), "options must be a Hash"))?;
-
-    let truthy = |name: &str| -> bool {
-        h.get(ruby.to_symbol(name))
-            .is_some_and(|v: Value| v.to_bool())
+    let Some(h) = options_hash(ruby, opts)? else {
+        return Ok(ParseNativeOpts::default());
     };
+    let mut reader = OptReader::new(ruby, h);
+    let out = read_parse_opts(&mut reader)?;
+    reader.finish()?;
+    Ok(out)
+}
 
-    out.symbolize = truthy("symbolize_names");
-    out.freeze = truthy("freeze");
-    out.allow_duplicate_key = truthy("allow_duplicate_key");
-    out.popts.allow_nan = truthy("allow_nan");
-    out.popts.allow_trailing_comma = truthy("allow_trailing_comma");
+/// The non-empty options Hash in `opts`, or None for nil and `{}`
+/// (json 3's keyword-only parse hands the drop-in an empty hash per
+/// call).
+pub(crate) fn options_hash(ruby: &Ruby, opts: Value) -> Result<Option<magnus::RHash>, Error> {
+    use magnus::value::ReprValue;
+    if opts.is_nil() {
+        return Ok(None);
+    }
+    let h = magnus::RHash::from_value(opts)
+        .ok_or_else(|| Error::new(ruby.exception_arg_error(), "options must be a Hash"))?;
+    Ok((!h.is_empty()).then_some(h))
+}
 
-    if let Some(mn) = h.get(ruby.to_symbol("max_nesting")) {
+/// Read symbolize_names, freeze, max_nesting, allow_nan,
+/// allow_trailing_comma and allow_duplicate_key. The json options NOSJ
+/// does not implement (object_class, array_class, decimal_class,
+/// on_load, create_additions, allow_comments, allow_control_characters,
+/// allow_invalid_escape) raise unless falsy.
+pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Error> {
+    use magnus::value::ReprValue;
+
+    let mut out = ParseNativeOpts {
+        symbolize: r.truthy(Opt::SymbolizeNames),
+        freeze: r.truthy(Opt::Freeze),
+        allow_duplicate_key: r.truthy(Opt::AllowDuplicateKey),
+        ..ParseNativeOpts::default()
+    };
+    out.popts.allow_nan = r.truthy(Opt::AllowNan);
+    out.popts.allow_trailing_comma = r.truthy(Opt::AllowTrailingComma);
+
+    if let Some(mn) = r.get(Opt::MaxNesting) {
         out.max_nesting =
             if mn.is_nil() || mn.to_bool() && magnus::Integer::from_value(mn).is_none() {
                 MAX_NESTING // nil / true: gem default
@@ -106,19 +124,16 @@ pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeO
             };
     }
 
-    for unsupported in [
-        "object_class",
-        "array_class",
-        "decimal_class",
-        "create_additions",
-    ] {
-        if truthy(unsupported) {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                format!("NOSJ.parse does not support the {unsupported} option"),
-            ));
-        }
-    }
+    r.tolerate(&[
+        Opt::ObjectClass,
+        Opt::ArrayClass,
+        Opt::DecimalClass,
+        Opt::OnLoad,
+        Opt::CreateAdditions,
+        Opt::AllowComments,
+        Opt::AllowControlCharacters,
+        Opt::AllowInvalidEscape,
+    ]);
     Ok(out)
 }
 

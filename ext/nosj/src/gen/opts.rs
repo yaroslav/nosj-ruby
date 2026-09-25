@@ -5,6 +5,8 @@ use magnus::value::ReprValue;
 use magnus::{Error, RHash, RString, Ruby, Value};
 use nosj::emit::EscapeMode;
 
+use crate::opt_reader::{Opt, OptReader};
+
 pub(crate) struct GenConfig {
     pub(crate) indent: Vec<u8>,
     pub(crate) space: Vec<u8>,
@@ -146,82 +148,83 @@ impl Default for GenConfig {
     }
 }
 
-fn opt_bytes(ruby: &Ruby, opts: RHash, name: &str) -> Result<Option<Vec<u8>>, Error> {
-    let v: Value = opts
-        .get(ruby.to_symbol(name))
-        .unwrap_or_else(|| ruby.qnil().as_value());
-    if v.is_nil() {
+fn opt_bytes(r: &mut OptReader, opt: Opt, name: &str) -> Result<Option<Vec<u8>>, Error> {
+    let Some(v) = r.get(opt).filter(|v| !v.is_nil()) else {
         return Ok(None);
-    }
+    };
     let s = RString::from_value(v).ok_or_else(|| {
         Error::new(
-            ruby.exception_type_error(),
+            r.ruby().exception_type_error(),
             format!("{name} must be a String"),
         )
     })?;
     Ok(Some(unsafe { s.as_slice() }.to_vec()))
 }
 
-fn opt_bool(ruby: &Ruby, opts: RHash, name: &str) -> Option<bool> {
-    let v: Value = opts.get(ruby.to_symbol(name))?;
-    if v.is_nil() {
-        None
-    } else {
-        Some(v.to_bool())
-    }
+fn opt_bool(r: &mut OptReader, opt: Opt) -> Option<bool> {
+    r.get(opt).filter(|v| !v.is_nil()).map(|v| v.to_bool())
 }
 
-/// Decode a non-nil options hash (nil takes [`DEFAULT_CONFIG`] at the
-/// call site without constructing anything).
+/// Decode a generate options hash (nil takes [`DEFAULT_CONFIG`] at the
+/// call site without constructing anything); keys it does not read
+/// raise ArgumentError, like json 3.
 pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usize), Error> {
-    let mut cfg = GenConfig::default();
-    let mut cap_hint = 0usize;
     if opts.is_nil() {
-        return Ok((cfg, cap_hint));
+        return Ok((GenConfig::default(), 0));
     }
     let opts = RHash::from_value(opts)
         .ok_or_else(|| Error::new(ruby.exception_type_error(), "options must be a Hash or nil"))?;
+    let mut reader = OptReader::new(ruby, opts);
+    let decoded = read_gen_opts(&mut reader)?;
+    reader.finish()?;
+    Ok(decoded)
+}
 
-    if let Some(v) = opt_bytes(ruby, opts, "indent")? {
+/// Read the json 3 generate options and the buffer size hint. sort_keys
+/// and as_json, which NOSJ does not implement, raise unless falsy.
+pub(crate) fn read_gen_opts(r: &mut OptReader) -> Result<(GenConfig, usize), Error> {
+    let mut cfg = GenConfig::default();
+    let mut cap_hint = 0usize;
+
+    if let Some(v) = opt_bytes(r, Opt::Indent, "indent")? {
         cfg.indent = v;
     }
-    if let Some(v) = opt_bytes(ruby, opts, "space")? {
+    if let Some(v) = opt_bytes(r, Opt::Space, "space")? {
         cfg.space = v;
     }
-    if let Some(v) = opt_bytes(ruby, opts, "space_before")? {
+    if let Some(v) = opt_bytes(r, Opt::SpaceBefore, "space_before")? {
         cfg.space_before = v;
     }
-    if let Some(v) = opt_bytes(ruby, opts, "object_nl")? {
+    if let Some(v) = opt_bytes(r, Opt::ObjectNl, "object_nl")? {
         cfg.object_nl = v;
     }
-    if let Some(v) = opt_bytes(ruby, opts, "array_nl")? {
+    if let Some(v) = opt_bytes(r, Opt::ArrayNl, "array_nl")? {
         cfg.array_nl = v;
     }
-    if let Some(v) = opt_bool(ruby, opts, "allow_nan") {
+    if let Some(v) = opt_bool(r, Opt::AllowNan) {
         cfg.allow_nan = v;
     }
-    if let Some(v) = opt_bool(ruby, opts, "strict") {
+    if let Some(v) = opt_bool(r, Opt::Strict) {
         cfg.strict = v;
     }
-    if let Some(v) = opt_bool(ruby, opts, "allow_duplicate_key") {
+    if let Some(v) = opt_bool(r, Opt::AllowDuplicateKey) {
         cfg.allow_duplicate_key = v;
     }
-    let ascii = opt_bool(ruby, opts, "ascii_only").unwrap_or(false);
-    let script = opt_bool(ruby, opts, "script_safe").unwrap_or(false)
-        || opt_bool(ruby, opts, "escape_slash").unwrap_or(false);
+    r.tolerate(&[Opt::SortKeys, Opt::AsJson]);
+    let ascii = opt_bool(r, Opt::AsciiOnly).unwrap_or(false);
+    let script = opt_bool(r, Opt::ScriptSafe).unwrap_or(false);
     if ascii {
         cfg.mode = EscapeMode::AsciiOnly;
         if script {
             return Err(Error::new(
-                ruby.exception_arg_error(),
+                r.ruby().exception_arg_error(),
                 "NOSJ.generate: ascii_only and script_safe cannot be combined",
             ));
         }
     } else if script {
         cfg.mode = EscapeMode::ScriptSafe;
     }
-    if let Some(v) = opts.get(ruby.to_symbol("max_nesting")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::MaxNesting) {
         // nil/false → unlimited; true → keep the default 100; Integer → limit.
         if !v.to_bool() {
             cfg.max_nesting = 0;
@@ -229,14 +232,12 @@ pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usi
             cfg.max_nesting = if n <= 0 { 0 } else { n as usize };
         }
     }
-    if let Some(v) = opts.get(ruby.to_symbol("depth")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::Depth) {
         if let Ok(n) = <i64 as magnus::TryConvert>::try_convert(v) {
             cfg.start_depth = if n <= 0 { 0 } else { n as usize };
         }
     }
-    if let Some(v) = opts.get(ruby.to_symbol("buffer_initial_length")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::BufferInitialLength) {
         if let Ok(n) = <i64 as magnus::TryConvert>::try_convert(v) {
             if n > 0 {
                 cap_hint = n as usize;

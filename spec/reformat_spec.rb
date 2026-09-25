@@ -92,6 +92,13 @@ RSpec.describe "NOSJ.minify / NOSJ.reformat" do
       .to eq(NOSJ.generate(NOSJ.parse(src), script_safe: true))
   end
 
+  it "takes parse and generate options from one hash, and nothing else" do
+    expect(NOSJ.reformat("[1, NaN]", pretty: true, allow_nan: true, max_nesting: 5, indent: "\t"))
+      .to eq("[\n\t1,\n\tNaN\n]")
+    expect { NOSJ.reformat("[1]", bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.minify("[1]", pretty: true) }.to raise_error(ArgumentError, "unknown keyword: pretty")
+  end
+
   it "raises rich ParserErrors and rejects non-UTF-8 like parse" do
     begin
       NOSJ.minify(%({\n "a": nope}))
