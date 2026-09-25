@@ -16,12 +16,12 @@ name = "nosj"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-magnus = { version = "0.8", features = ["rb-sys"] }
-rb-sys = { version = "0.9.124", default-features = false }
-ahash = "0.8.11"
+magnus = { version = "0.9", features = ["rb-sys"] }
+rb-sys = { version = "0.9.130", default-features = false }
+ahash = "0.8.12"
 # Read-only file mapping for the file entry points (load_lazy_file,
 # at_pointer_file, dig_file): pages never touched are never read.
-memmap2 = "0.9"
+memmap2 = "0.9.11"
 # First-party SIMD JSON parse/generate library (github.com/yaroslav/nosj).
 # For coordinated crate+gem work, temporarily flip to
 # { path = "../../../nosj" } and restore before any commit or release.

@@ -13,7 +13,7 @@ libfuzzer-sys = "0.4"
 # crate. Only this harness enables "embed" (rb-sys/link-ruby): fuzz
 # binaries host their own VM, while the extension must never link
 # libruby (its symbols resolve from the host process at load time).
-magnus = { version = "0.8", features = ["embed", "rb-sys"] }
+magnus = { version = "0.9", features = ["embed", "rb-sys"] }
 # The extension as an rlib; its lib target is named `nosj` (the bundle
 # name), so rename the dependency to keep fuzz code readable.
 nosj_ext = { path = "..", package = "nosj_native" }
