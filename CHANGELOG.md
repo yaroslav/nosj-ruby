@@ -5,6 +5,12 @@
   `Array#clear`) made the generator read freed memory, usually a
   segfault. The array length is now re-read for every element, like
   the json gem, so elements a callback appends are emitted too.
+- Fixed memory corruption in `NOSJ.splice`: a replacement value whose
+  `to_json` modified the source string, deduplicated a frozen String
+  subclass (`-str`), or removed entries from the edits hash could make
+  splice read freed memory, copying unrelated heap bytes into the
+  result or crashing. All values are now generated before the source
+  is read.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

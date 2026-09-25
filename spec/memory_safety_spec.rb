@@ -53,4 +53,70 @@ RSpec.describe "memory safety under hostile callbacks" do
       RUBY
     end
   end
+
+  describe "NOSJ.splice with values whose to_json misbehaves" do
+    # Each value's to_json attacks what splice holds while generating:
+    # the source bytes, or the only Ruby reference to a later value.
+    # After the attack, GC frees what lost its references, and live
+    # churn then reuses both freed object slots ("RRR" strings) and
+    # freed buffers ("QQQ..."), so a stale read shows up in the output.
+    def splice_script(attack, source_setup)
+      <<~RUBY
+        require "nosj"
+        PAD = "p" * 5000
+        EXPECTED = %({"a": 1, "b": "\#{PAD}", "c": 3})
+        class Hostile
+          def initialize(&attack) = @attack = attack
+          def to_json(*)
+            @attack.call
+            GC.start
+            $churn = [Array.new(3000) { "Q" * 5100 }, Array.new(20_000) { "R" * 3 }]
+            "1"
+          end
+        end
+        5.times do
+          #{source_setup}
+          edits = {}
+          edits["/a"] = Hostile.new { #{attack} }
+          edits["/c"] = Object.new.tap { |o| def o.to_json(*) = "3" }
+          out = NOSJ.splice(src, edits)
+          raise "corrupted: \#{out[0, 40].inspect}" unless out == EXPECTED
+        end
+        puts "ALL-OK"
+      RUBY
+    end
+
+    it "is unaffected by a callback that clears the edits hash" do
+      expect_ok(splice_script("edits.clear", "src = EXPECTED.dup"))
+    end
+
+    it "never reads a source buffer a callback reallocated" do
+      ok, out = run_script(<<~RUBY)
+        require "nosj"
+        pad = "p" * 5000
+        src = %({"a": 1, "b": "\#{pad}", "c": 3})
+        attack = Object.new
+        attack.define_singleton_method(:to_json) do |*|
+          src.replace(%({"a": 0, "c": 0}))
+          Array.new(3000) { "Q" * 5100 }
+          GC.start
+          "1"
+        end
+        out = NOSJ.splice(src, "/a" => attack, "/c" => 3)
+        raise "leaked heap bytes: \#{out[0, 40].inspect}" if out.include?("QQQQ")
+        puts out
+        puts "ALL-OK"
+      RUBY
+      expect(ok).to be(true), out
+      expect(out).to include("ALL-OK"), out
+      # The edits land on the document as it stands after the callbacks.
+      expect(out).to include(%({"a": 1, "c": 3}))
+    end
+
+    it "survives a frozen String subclass whose buffer is swapped by deduplication" do
+      # Built from an unretained temporary: deduplication frees the
+      # buffer only when nothing else shares it.
+      expect_ok(splice_script("-src", "src = Class.new(String).new(EXPECTED + \"\").freeze"))
+    end
+  end
 end
