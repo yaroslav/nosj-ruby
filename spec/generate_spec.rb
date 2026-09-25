@@ -101,4 +101,33 @@ RSpec.describe "NOSJ.generate" do
       .to eq(JSON.generate(value, strict: true))
     expect(NOSJ.generate(value)).to eq('{"cached":{"pre":"rendered"}}')
   end
+
+  describe "keys that render alike (json 3 semantics)" do
+    # json 3's rule: only a String or Symbol key in a hash whose first key
+    # had another kind triggers the check (keys of one kind cannot
+    # collide), which then compares every key's to_s.
+    it "raises the gem's GeneratorError for mixed-kind collisions" do
+      {
+        {"a" => 1, :a => 2} => 'detected duplicate key "a" in {"a" => 1, a: 2}',
+        {:b => 1, :a => 2, "a" => 3} => 'detected duplicate key "a" in {b: 1, a: 2, "a" => 3}',
+        {1 => 1, "1" => 2} => 'detected duplicate key "1" in {1 => 1, "1" => 2}',
+        {nil => 1, "" => 2} => 'detected duplicate key "" in {nil => 1, "" => 2}',
+        {"x" => {"c" => 1, :c => 2}} => 'detected duplicate key "c" in {"c" => 1, c: 2}'
+      }.each do |hash, message|
+        expect { NOSJ.generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
+        expect { NOSJ.pretty_generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
+      end
+    end
+
+    it "emits them under allow_duplicate_key: true, and never checks one-kind hashes" do
+      expect(NOSJ.generate({"a" => 1, :a => 2}, allow_duplicate_key: true)).to eq('{"a":1,"a":2}')
+      expect(NOSJ.generate({"a" => 1, :b => 2})).to eq('{"a":1,"b":2}')
+      same = Struct.new(:n) { def to_s = "same" }
+      expect(NOSJ.generate({same.new(1) => 1, same.new(2) => 2})).to eq('{"same":1,"same":2}')
+      identity = {}.compare_by_identity
+      identity[+"a"] = 1
+      identity[+"a"] = 2
+      expect(NOSJ.generate(identity)).to eq('{"a":1,"a":2}')
+    end
+  end
 end

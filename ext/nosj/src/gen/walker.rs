@@ -16,8 +16,9 @@ use super::keys::GenKeyCache;
 use super::opts::GenConfig;
 use super::ruby::{
     is_json_fragment, is_special_const, protected_as_json, protected_encode_utf8,
-    protected_to_json, protected_to_json_if_responds, protected_to_s, rstring_bytes, str_coderange,
-    str_enc_index, utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL, QTRUE,
+    protected_inspect, protected_to_json, protected_to_json_if_responds, protected_to_s,
+    rstring_bytes, str_coderange, str_enc_index, utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL,
+    QTRUE,
 };
 
 /// Whether keys escaped under `mode` may be cached: the cached bytes
@@ -25,6 +26,78 @@ use super::ruby::{
 /// cacheable mode and hands `Gen` the matching one.
 pub(super) fn mode_cacheable(mode: EscapeMode) -> bool {
     matches!(mode, EscapeMode::Standard | EscapeMode::HtmlSafe)
+}
+
+/// A hash key's kind, for json 3's duplicate-key rule. Discriminants
+/// start at 1: [`MixedKeys`] keeps 0 for "no key seen yet".
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum KeyKind {
+    String = 1,
+    Symbol = 2,
+    Other = 3,
+}
+
+/// [`MixedKeys::first`] before a hash's first key.
+const NO_KEY_YET: u8 = 0;
+
+#[inline(always)]
+fn key_kind(k: VALUE) -> KeyKind {
+    if !is_special_const(k) {
+        match unsafe { RB_BUILTIN_TYPE(k) } {
+            ruby_value_type::RUBY_T_STRING => KeyKind::String,
+            ruby_value_type::RUBY_T_SYMBOL => KeyKind::Symbol,
+            _ => KeyKind::Other,
+        }
+    } else if STATIC_SYM_P(k) {
+        KeyKind::Symbol
+    } else {
+        KeyKind::Other
+    }
+}
+
+/// json 3's cheap trigger for its duplicate-key check, per hash: keys of
+/// one kind cannot render alike, so only a String or Symbol key in a
+/// hash whose first key was of another kind runs the full check (once).
+/// A key of the first key's kind costs one byte compare, a hash's first
+/// key one more; only actual mixing goes out of line.
+struct MixedKeys {
+    /// The first key's kind as its discriminant, or [`NO_KEY_YET`].
+    first: u8,
+    /// Checked already, or `allow_duplicate_key`: nothing left to do.
+    done: bool,
+}
+
+impl MixedKeys {
+    #[inline(always)]
+    fn new(allow_duplicate_key: bool) -> Self {
+        MixedKeys {
+            first: NO_KEY_YET,
+            done: allow_duplicate_key,
+        }
+    }
+
+    #[inline(always)]
+    fn needs_check(&mut self, kind: KeyKind) -> bool {
+        if kind as u8 == self.first {
+            return false;
+        }
+        if self.first == NO_KEY_YET {
+            self.first = kind as u8;
+            return false;
+        }
+        self.mixed(kind)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn mixed(&mut self, kind: KeyKind) -> bool {
+        if self.done || kind == KeyKind::Other {
+            return false;
+        }
+        self.done = true;
+        true
+    }
 }
 
 pub(super) struct Gen<'a> {
@@ -164,13 +237,19 @@ impl Gen<'_> {
     /// The pre-escaped bytes for `k` when the cache may serve it:
     /// frozen string key, cacheable escape mode (see
     /// [`Gen::emit_key_cached`]). An associated fn over the split-out
-    /// fields so callers keep `self.out` free.
+    /// fields so callers keep `self.out` free. `kind` is the caller's
+    /// [`key_kind`] of `k`, computed once per pair for both this and
+    /// the duplicate-key tracking.
     #[inline(always)]
-    fn cached_key_bytes<'k>(cfg: &GenConfig, keys: &'k GenKeyCache, k: VALUE) -> Option<&'k [u8]> {
+    fn cached_key_bytes<'k>(
+        cfg: &GenConfig,
+        keys: &'k GenKeyCache,
+        k: VALUE,
+        kind: KeyKind,
+    ) -> Option<&'k [u8]> {
         const FL_FREEZE: u64 = rb_sys::ruby_fl_type::RUBY_FL_FREEZE as u64;
-        if mode_cacheable(cfg.mode)
-            && !is_special_const(k)
-            && unsafe { RB_BUILTIN_TYPE(k) } == ruby_value_type::RUBY_T_STRING
+        if kind == KeyKind::String
+            && mode_cacheable(cfg.mode)
             && unsafe { (*(k as *const rb_sys::RBasic)).flags } & FL_FREEZE != 0
         {
             keys.get(k)
@@ -187,8 +266,8 @@ impl Gen<'_> {
     /// all through the cache-hit path here. Misses take the plain path
     /// below, which also populates the cache.
     #[inline(always)]
-    fn emit_pair_prefix_compact(&mut self, k: VALUE, comma: bool) -> Result<(), ()> {
-        if let Some(bytes) = Self::cached_key_bytes(self.cfg, self.keys, k) {
+    fn emit_pair_prefix_compact(&mut self, k: VALUE, kind: KeyKind, comma: bool) -> Result<(), ()> {
+        if let Some(bytes) = Self::cached_key_bytes(self.cfg, self.keys, k, kind) {
             let n = bytes.len();
             self.out.reserve(n + 2);
             // SAFETY: `n + 2` bytes reserved above; `bytes` borrows
@@ -221,8 +300,14 @@ impl Gen<'_> {
     /// separator, cached key, colon, and digits in one reservation and
     /// one raw cursor.
     #[inline(always)]
-    fn emit_pair_int_compact(&mut self, k: VALUE, comma: bool, value: i64) -> Result<(), ()> {
-        if let Some(bytes) = Self::cached_key_bytes(self.cfg, self.keys, k) {
+    fn emit_pair_int_compact(
+        &mut self,
+        k: VALUE,
+        kind: KeyKind,
+        comma: bool,
+        value: i64,
+    ) -> Result<(), ()> {
+        if let Some(bytes) = Self::cached_key_bytes(self.cfg, self.keys, k, kind) {
             let n = bytes.len();
             self.out.reserve(n + 2 + emit::I64_MAX_LEN);
             // SAFETY: the reservation covers separator + key + colon +
@@ -245,7 +330,7 @@ impl Gen<'_> {
             }
             return Ok(());
         }
-        self.emit_pair_prefix_compact(k, comma)?;
+        self.emit_pair_prefix_compact(k, kind, comma)?;
         emit::write_i64(&mut *self.out, value);
         Ok(())
     }
@@ -309,6 +394,54 @@ impl Gen<'_> {
         }
         let s = self.reraise(protected_to_s(raw))?;
         self.emit_rstring_quoted(s)
+    }
+
+    /// json 3's full duplicate check, run once for a hash whose keys
+    /// mixed kinds: every key through `to_s`, first repeat raises the
+    /// gem's exact message. Cold: only mixed-kind hashes reach it.
+    #[cold]
+    fn check_duplicate_keys(&mut self, hash: VALUE) -> Result<(), ()> {
+        use super::hash_iter::{foreach_raw, Step};
+        let mut seen = std::collections::HashSet::new();
+        let mut outcome: Result<Option<VALUE>, Error> = Ok(None);
+        // SAFETY: only reached for T_HASH values.
+        unsafe {
+            foreach_raw(hash, |k, _| {
+                let key_str = match key_kind(k) {
+                    KeyKind::String => k,
+                    KeyKind::Symbol => rb_sys::rb_sym2str(k),
+                    KeyKind::Other => match protected_to_s(k) {
+                        Ok(s) => s,
+                        Err(exc) => {
+                            outcome = Err(exc);
+                            return Step::Stop;
+                        }
+                    },
+                };
+                if seen.insert(rstring_bytes(key_str).to_vec()) {
+                    Step::Continue
+                } else {
+                    outcome = Ok(Some(key_str));
+                    Step::Stop
+                }
+            });
+        }
+        let Some(key_str) = self.reraise(outcome)? else {
+            return Ok(());
+        };
+        let key_inspect = self.reraise(protected_inspect(key_str))?;
+        let hash_inspect = self.reraise(protected_inspect(hash))?;
+        // SAFETY: rb_inspect returns Strings; both are copied out here.
+        let (key_inspect, hash_inspect) = unsafe {
+            (
+                String::from_utf8_lossy(rstring_bytes(key_inspect)).into_owned(),
+                String::from_utf8_lossy(rstring_bytes(hash_inspect)).into_owned(),
+            )
+        };
+        self.fail = Some(GenFail::Generator(format!(
+            "detected duplicate key {key_inspect} in {hash_inspect}"
+        )));
+        Err(())
     }
 
     /// Splice `raw`'s `to_json` result verbatim: the JSON::Fragment
@@ -506,11 +639,15 @@ impl Gen<'_> {
             self.out.push(b'}');
             return Ok(());
         }
+        let mut mixed = MixedKeys::new(self.cfg.allow_duplicate_key);
         // SAFETY: emit_object is only reached for T_HASH values.
         if PRETTY {
             let mut first = true;
             unsafe {
                 foreach_raw(hash, |k, v| {
+                    if mixed.needs_check(key_kind(k)) && self.check_duplicate_keys(hash).is_err() {
+                        return Step::Stop;
+                    }
                     if !first {
                         self.out.push(b',');
                     }
@@ -532,20 +669,24 @@ impl Gen<'_> {
         } else {
             unsafe {
                 foreach_raw(hash, |k, v| {
+                    let kind = key_kind(k);
+                    if mixed.needs_check(kind) && self.check_duplicate_keys(hash).is_err() {
+                        return Step::Stop;
+                    }
                     // `out` always ends with '{' (just pushed) or the
                     // previous pair.
                     let comma = *self.out.last().unwrap_unchecked() != b'{';
                     // Int values fuse with their key into one write.
                     if FIXNUM_P(v) {
                         if self
-                            .emit_pair_int_compact(k, comma, FIX2LONG(v) as i64)
+                            .emit_pair_int_compact(k, kind, comma, FIX2LONG(v) as i64)
                             .is_err()
                         {
                             return Step::Stop;
                         }
                         return Step::Continue;
                     }
-                    if self.emit_pair_prefix_compact(k, comma).is_err() {
+                    if self.emit_pair_prefix_compact(k, kind, comma).is_err() {
                         return Step::Stop;
                     }
                     // Value fast arms, mirroring emit_value's: one

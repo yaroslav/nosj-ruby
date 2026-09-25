@@ -16,7 +16,8 @@ module NOSJ
   # omitted. Parse: symbolize_names, freeze, max_nesting, allow_nan,
   # allow_trailing_comma, allow_duplicate_key. Generate: indent, space, space_before,
   # object_nl, array_nl, max_nesting, allow_nan, ascii_only,
-  # script_safe/escape_slash, strict, depth, buffer_initial_length.
+  # script_safe/escape_slash, strict, depth, buffer_initial_length,
+  # allow_duplicate_key.
   type opts = Hash[Symbol, untyped]?
 
   # One NOSJ.dig path element (negative Integer indices resolve to nil).

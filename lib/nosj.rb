@@ -122,10 +122,13 @@ module NOSJ
   #   @param opts [Hash, nil] +indent+, +space+, +space_before+,
   #     +object_nl+, +array_nl+, +max_nesting+ (Integer or +false+),
   #     +allow_nan+, +ascii_only+, +script_safe+ (alias +escape_slash+),
-  #     +strict+, +depth+, +buffer_initial_length+
+  #     +strict+, +depth+, +buffer_initial_length+,
+  #     +allow_duplicate_key+ (json 3 semantics: keys that render alike,
+  #     like <code>"a"</code> and <code>:a</code>, raise unless true)
   #   @return [String] the JSON document
   #   @raise [GeneratorError] for non-finite floats without +allow_nan+,
-  #     unsupported objects under +strict+, or broken string encodings
+  #     unsupported objects under +strict+, keys that render alike, or
+  #     broken string encodings
   #   @raise [NestingError] when nesting exceeds +max_nesting+
 
   # Generates human-readable JSON, JSON.pretty_generate-compatible

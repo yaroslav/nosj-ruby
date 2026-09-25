@@ -12,6 +12,11 @@ changes for documents that were accepted before:
 - Lone UTF-16 surrogates such as `"\udc00"` raise `NOSJ::ParserError`
   everywhere, trailing ones included (they used to decode to raw
   WTF-8 bytes, and `minify` re-escaped them).
+- `generate` raises `NOSJ::GeneratorError` for keys that render alike
+  (`{"a" => 1, :a => 2}`, `{1 => 1, "1" => 2}`), with json 3's exact
+  message; `allow_duplicate_key: true` emits them as before. Hashes
+  whose keys are all of one kind are never checked. The Rails encoder
+  is unchanged.
 - `stats` still describes such documents rather than refusing them.
 
 ## [0.4.1] - 2026-09-25

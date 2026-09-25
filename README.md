@@ -111,7 +111,8 @@ NOSJ.parse(src, symbolize_names: true)   # also: freeze, max_nesting,
                                          # allow_nan, allow_trailing_comma,
                                          # allow_duplicate_key
 NOSJ.generate(obj)                       # indent, space, object_nl, ...,
-NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict
+NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict,
+                                         # allow_duplicate_key
 ```
 
 ### Lazy documents

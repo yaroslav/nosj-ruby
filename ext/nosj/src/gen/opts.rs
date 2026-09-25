@@ -21,6 +21,9 @@ pub(crate) struct GenConfig {
     /// null (Float#as_json parity). Set only by the Rails entry, never
     /// from user option hashes.
     pub(super) rails: bool,
+    /// json 3: keys that render the same (`"a"` and `:a`) raise unless
+    /// this is set. The Rails configs keep ActiveSupport's own handling.
+    pub(super) allow_duplicate_key: bool,
     pub(crate) mode: EscapeMode,
     /// Precomputed "any formatting string set": scanning the five
     /// vectors per call was measurable on tiny documents.
@@ -43,6 +46,7 @@ pub(crate) static DEFAULT_CONFIG: GenConfig = GenConfig {
     allow_nan: false,
     strict: false,
     rails: false,
+    allow_duplicate_key: false,
     mode: EscapeMode::Standard,
     pretty: false,
 };
@@ -62,6 +66,7 @@ pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = GenConfig {
     allow_nan: false,
     strict: false,
     rails: true,
+    allow_duplicate_key: true,
     mode: EscapeMode::HtmlSafe,
     pretty: false,
 };
@@ -79,6 +84,7 @@ pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = GenConfig {
     allow_nan: false,
     strict: false,
     rails: true,
+    allow_duplicate_key: true,
     mode: EscapeMode::HtmlEntities,
     pretty: false,
 };
@@ -96,6 +102,7 @@ pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = GenConfig {
     allow_nan: false,
     strict: false,
     rails: true,
+    allow_duplicate_key: true,
     mode: EscapeMode::JsSeparators,
     pretty: false,
 };
@@ -114,6 +121,7 @@ pub(super) static RAILS_CONFIG: GenConfig = GenConfig {
     allow_nan: false,
     strict: false,
     rails: true,
+    allow_duplicate_key: true,
     mode: EscapeMode::Standard,
     pretty: false,
 };
@@ -131,6 +139,7 @@ impl Default for GenConfig {
             allow_nan: false,
             strict: false,
             rails: false,
+            allow_duplicate_key: false,
             mode: EscapeMode::Standard,
             pretty: false,
         }
@@ -193,6 +202,9 @@ pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usi
     }
     if let Some(v) = opt_bool(ruby, opts, "strict") {
         cfg.strict = v;
+    }
+    if let Some(v) = opt_bool(ruby, opts, "allow_duplicate_key") {
+        cfg.allow_duplicate_key = v;
     }
     let ascii = opt_bool(ruby, opts, "ascii_only").unwrap_or(false);
     let script = opt_bool(ruby, opts, "script_safe").unwrap_or(false)
