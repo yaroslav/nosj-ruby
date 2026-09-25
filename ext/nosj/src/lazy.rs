@@ -83,8 +83,16 @@ const KIND_ARRAY: u8 = b'[';
 /// come from the crate's resolver (token edges within the doc bytes),
 /// and never cross the Ruby boundary, so they cannot be forged from
 /// Ruby.
+///
+/// `wb_protected`: a node's only Ruby reference (a frozen source, in
+/// the shared `DocInner`) is set before the root node is wrapped and
+/// never written again, so there is no write to put a barrier on, and
+/// nodes promote to the old generation instead of being rescanned by
+/// every minor GC (children cache Ruby-side, in barrier-protected
+/// ivars). `free_immediately`: dropping a node calls no Ruby API (it
+/// releases a Vec, an mmap, or nothing).
 #[derive(TypedData)]
-#[magnus(class = "NOSJ::Lazy", mark)]
+#[magnus(class = "NOSJ::Lazy", free_immediately, mark, wb_protected)]
 pub struct LazyNode {
     doc: Arc<DocInner>,
     start: usize,

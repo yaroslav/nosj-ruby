@@ -70,6 +70,12 @@ pub(crate) struct VStackShadow {
 /// through [`DataTypeFunctions::mark`] (its trampoline, not ours),
 /// pinning every pending VALUE with `rb_gc_mark` semantics. The class
 /// is defined (and made a private constant) at init.
+///
+/// Deliberately NOT `wb_protected`: parses push VALUEs into the shadow
+/// with plain stores, no write barriers, so an old protected handle
+/// would let the GC miss young values it holds (a use-after-free).
+/// Staying write-barrier-unprotected makes every GC rescan the handle,
+/// which costs nothing measurable: there are one to three per thread.
 #[derive(TypedData)]
 #[magnus(class = "NOSJ::ValueStackShadow", mark)]
 pub(crate) struct ShadowHandle(*const VStackShadow);

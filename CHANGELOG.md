@@ -30,6 +30,10 @@
 - Fixed: after a `NoMemoryError` in the middle of a parse (or
   `minify`/`reformat`), the next call on that thread aborted the whole
   process. Per-thread parser state is now recovered instead.
+- `NOSJ::Lazy` nodes now take part in generational GC: holding many
+  nodes no longer slows down every minor GC (200,000 live nodes: 2.9 ms
+  per minor GC before, 0.1 ms now), and they are freed immediately
+  when collected.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`
