@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- Fixed a crash in `NOSJ.generate`: an object whose `to_json` or
+  `to_s` shrank the array being generated (for example with
+  `Array#clear`) made the generator read freed memory, usually a
+  segfault. The array length is now re-read for every element, like
+  the json gem, so elements a callback appends are emitted too.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

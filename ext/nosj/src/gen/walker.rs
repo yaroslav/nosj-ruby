@@ -390,14 +390,21 @@ impl Gen<'_> {
     fn emit_array<const PRETTY: bool>(&mut self, ary: VALUE, depth: usize) -> Result<(), ()> {
         let inner = depth + 1;
         self.nesting_check(inner)?;
-        let len = unsafe { RARRAY_LEN(ary) } as usize;
         self.out.push(b'[');
-        if len == 0 {
+        if unsafe { RARRAY_LEN(ary) } == 0 {
             self.out.push(b']');
             return Ok(());
         }
         let mut i = 0usize;
-        while i < len {
+        loop {
+            // Re-read the length every element, like the json gem: a
+            // user callback inside the recursion (to_json, to_s,
+            // as_json) may shrink the array, and slots past the live
+            // length hold freed or reused VALUEs. Growth is emitted.
+            let len = unsafe { RARRAY_LEN(ary) } as usize;
+            if i >= len {
+                break;
+            }
             if i > 0 {
                 self.out.push(b',');
             }
