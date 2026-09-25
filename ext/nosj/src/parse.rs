@@ -22,6 +22,12 @@ pub(crate) fn span_of(source: &[u8], sub: &[u8]) -> (usize, usize) {
 
 /// Validate that `data` is UTF-8 (or US-ASCII) with intact coderange and
 /// hand out its byte slice.
+///
+/// The slice borrows the string's buffer, which Ruby may reallocate or
+/// swap (even for a frozen string: see `lazy::DocBytes`), so it must
+/// not be held across anything that can run Ruby code: user callbacks,
+/// yields, or option decoding (`to_int` and friends). Decode options
+/// first; re-borrow after callbacks.
 pub(crate) fn utf8_input<'a>(ruby: &Ruby, data: &'a RString) -> Result<&'a [u8], Error> {
     let raw = data.as_raw();
     unsafe {
