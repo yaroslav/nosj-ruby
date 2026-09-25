@@ -23,6 +23,19 @@ pub(super) fn protected_to_json(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, to_json_id(), 0) })
 }
 
+/// `v.respond_to?(:to_json)`, protected: `rb_respond_to` dispatches to a
+/// user-defined `respond_to?` / `respond_to_missing?`, which may raise.
+pub(super) fn protected_responds_to_json(v: VALUE) -> Result<bool, Error> {
+    magnus::rb_sys::protect(|| unsafe {
+        if rb_sys::rb_respond_to(v, to_json_id()) != 0 {
+            QTRUE
+        } else {
+            QFALSE
+        }
+    })
+    .map(|r| r == QTRUE)
+}
+
 /// `v.as_json`, protected. Argument-less on purpose: ActiveSupport's
 /// JSONGemEncoder#jsonify recursion also calls as_json without
 /// options (only the top-level value receives them).

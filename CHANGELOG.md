@@ -16,6 +16,11 @@
   string carrying instance variables, and it is later deduplicated
   with `-str`: Ruby swaps such a string's buffer, and lazy nodes kept
   reading the old one (wrong values, or a crash).
+- Fixed a memory leak in `NOSJ.generate`: when an object's
+  `respond_to?` or `respond_to_missing?` raised during generation, the
+  exception bypassed the generator's cleanup and leaked its output
+  buffer (megabytes per call after large documents). The exception
+  still propagates unchanged.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

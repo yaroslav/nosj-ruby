@@ -20,6 +20,39 @@ RSpec.describe "memory safety under hostile callbacks" do
     expect(out).to include("ALL-OK"), out
   end
 
+  # A Ruby exception that longjmps over the generator's Rust frames
+  # skips handing the per-thread scratch back, leaking its warm output
+  # buffer (~4 MB here) on every raise. Protected calls return it. The
+  # script body must define `hostile_call`, which raises through the
+  # generator. Control rounds (large generate only) run first so the
+  # allocator's retention of the large outputs has settled; the hostile
+  # rounds that follow must then stay flat, where a leak adds ~160 MB
+  # (no RSS probe on Windows).
+  def leak_check
+    <<~RUBY
+      def rss_mb
+        kb = if File.exist?("/proc/self/status")
+          File.read("/proc/self/status")[/VmRSS:\\s+(\\d+)/, 1].to_i
+        else
+          `ps -o rss= -p \#{Process.pid}`.to_i
+        end
+        kb / 1024.0
+      end
+      unless Gem.win_platform?
+        big = Array.new(200_000) { "xxxxxxxxxxxxxxxx" }
+        control = proc { NOSJ.generate(big) }
+        hostile = proc { NOSJ.generate(big); begin; hostile_call; rescue StandardError; end }
+        40.times(&control)
+        GC.start
+        before = rss_mb
+        40.times(&hostile)
+        GC.start
+        growth = rss_mb - before
+        raise "leaked \#{growth.round} MB across 40 raising calls" if growth > 40
+      end
+    RUBY
+  end
+
   describe "arrays mutated during generation" do
     it "stops at the live length when a callback shrinks the array" do
       expect_ok(<<~RUBY)
@@ -49,6 +82,41 @@ RSpec.describe "memory safety under hostile callbacks" do
         build = -> { a = [1]; a << Grower.new(a); a << 2; a }
         raise "diverged" unless NOSJ.generate(build.call) == JSON.generate(build.call)
         raise "unexpected" unless NOSJ.generate(build.call) == '[1,"g",2,7,"late"]'
+        puts "ALL-OK"
+      RUBY
+    end
+  end
+
+  describe "raising respond_to? during the to_json fallback" do
+    it "propagates the exception without leaking the generate scratch" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        class RespondBoom; def respond_to?(*) = raise("boom in respond_to?"); end
+        def hostile_call = NOSJ.generate([RespondBoom.new])
+        begin
+          hostile_call
+          raise "no exception"
+        rescue RuntimeError => e
+          raise "wrong exception: \#{e.message}" unless e.message == "boom in respond_to?"
+        end
+        raise "broken after" unless NOSJ.generate({"a" => [1]}) == '{"a":[1]}'
+        #{leak_check}
+        puts "ALL-OK"
+      RUBY
+    end
+
+    it "propagates a raising respond_to_missing? from inside a hash" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        class MissingBoom; def respond_to_missing?(*) = raise("boom in respond_to_missing?"); end
+        def hostile_call = NOSJ.generate({"k" => MissingBoom.new})
+        begin
+          hostile_call
+          raise "no exception"
+        rescue RuntimeError => e
+          raise "wrong exception: \#{e.message}" unless e.message == "boom in respond_to_missing?"
+        end
+        #{leak_check}
         puts "ALL-OK"
       RUBY
     end

@@ -15,8 +15,8 @@ use super::keys::GenKeyCache;
 use super::opts::GenConfig;
 use super::ruby::{
     is_json_fragment, is_special_const, protected_as_json, protected_encode_utf8,
-    protected_to_json, protected_to_s, rstring_bytes, str_coderange, str_enc_index, to_json_id,
-    utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL, QTRUE,
+    protected_responds_to_json, protected_to_json, protected_to_s, rstring_bytes, str_coderange,
+    str_enc_index, utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL, QTRUE,
 };
 
 /// Whether keys escaped under `mode` may be cached: the cached bytes
@@ -296,7 +296,14 @@ impl Gen<'_> {
             self.fail = Some(GenFail::Generator(format!("{name} not allowed in JSON")));
             return Err(());
         }
-        if unsafe { rb_sys::rb_respond_to(raw, to_json_id()) } != 0 {
+        let responds = match protected_responds_to_json(raw) {
+            Ok(responds) => responds,
+            Err(exc) => {
+                self.fail = Some(GenFail::Reraise(exc));
+                return Err(());
+            }
+        };
+        if responds {
             match protected_to_json(raw) {
                 Ok(json) => {
                     if !is_special_const(json)
