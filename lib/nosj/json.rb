@@ -43,9 +43,10 @@ module NOSJ
     PARSE_OPTS = %i[symbolize_names freeze max_nesting allow_nan
       allow_trailing_comma allow_duplicate_key].freeze
     # json 2 ignores quirks_mode, which Rails 7.x passes from
-    # ActiveSupport::JSON.decode: the fast path drops it (NOSJ.parse
-    # always parses top-level scalars). json 3 raises for it, so there it
-    # reaches the gem like any other unknown option.
+    # ActiveSupport::JSON.decode, so its fast path takes the key and
+    # drops it (NOSJ.parse always parses top-level scalars, and refuses
+    # unknown keys). json 3 raises for it, so there it reaches the gem
+    # like any other unknown option.
     QUIRKS_MODE = :quirks_mode
     JSON2_PARSE_OPTS = (PARSE_OPTS + [QUIRKS_MODE]).freeze
     GENERATE_OPTS = %i[indent space space_before object_nl array_nl
@@ -89,9 +90,20 @@ module NOSJ
           return original_parse(source, opts)
         end
       end
-      NOSJ.parse(input, opts&.key?(QUIRKS_MODE) ? opts.except(QUIRKS_MODE) : opts)
+      NOSJ.parse(input, opts)
     rescue NOSJ::ParserError, NOSJ::NestingError
       original_parse(source, opts)
+    end
+
+    # json 2's options without quirks_mode (see QUIRKS_MODE), allocating
+    # nothing for Rails' lone `quirks_mode: true`.
+    def without_quirks_mode(opts)
+      return opts unless opts&.key?(QUIRKS_MODE)
+      if opts.size == 1
+        nil
+      else
+        opts.except(QUIRKS_MODE)
+      end
     end
 
     # The installed gem's parse. json 3 takes keywords only; json 2's
@@ -112,16 +124,14 @@ module NOSJ
 
     # The options JSON.dump generates with before the caller's own: fixed
     # in json 3; json 2 reads its user-settable dump_default_options,
-    # through the internal reader newer 2.x versions added when they
-    # deprecated the public one.
-    def dump_defaults
-      if JSON3
-        JSON3_DUMP_DEFAULTS
-      elsif ::JSON.respond_to?(:_dump_default_options)
-        ::JSON._dump_default_options
-      else
-        ::JSON.dump_default_options
-      end
+    # through the internal reader 2.11 added when it deprecated the
+    # public one. Which one is decided here, once.
+    if JSON3
+      def dump_defaults = JSON3_DUMP_DEFAULTS
+    elsif ::JSON.respond_to?(:_dump_default_options)
+      def dump_defaults = ::JSON._dump_default_options
+    else
+      def dump_defaults = ::JSON.dump_default_options
     end
   end
 end
@@ -149,7 +159,7 @@ module JSON
       else
         def parse(source, opts = nil)
           if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::JSON2_PARSE_OPTS)
-            NOSJ::JSONDropIn.parse(source, opts)
+            NOSJ::JSONDropIn.parse(source, NOSJ::JSONDropIn.without_quirks_mode(opts))
           else
             nosj_original_parse(source, opts)
           end

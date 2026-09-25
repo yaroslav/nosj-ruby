@@ -32,6 +32,17 @@ RSpec.describe "require 'nosj/json' drop-in" do
     RUBY
   end
 
+  it "fast-paths only options NOSJ reads" do
+    # A listed key NOSJ refused would escape as ArgumentError: refusals
+    # the drop-in hands back to the gem are parse and generate errors.
+    expect_ok(<<~RUBY)
+      require "nosj/json"
+      NOSJ::JSONDropIn::PARSE_OPTS.each { |key| NOSJ.parse("1", key => nil) }
+      NOSJ::JSONDropIn::GENERATE_OPTS.each { |key| NOSJ.generate(1, key => nil) }
+      puts "ALL-OK"
+    RUBY
+  end
+
   it "follows the installed json gem, 2.x or 3.x: same results, same exceptions" do
     expect_ok(<<~'RUBY')
       require "nosj/json"
