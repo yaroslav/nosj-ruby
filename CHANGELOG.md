@@ -8,6 +8,7 @@
   now honor `allow_nan` and `allow_trailing_comma` while resolving the
   pointer, not only when materializing the matched value.
 - Updated the nosj crate to 0.2.2.
+- Updated dependencies, Magnus bumped to 0.9.0.
 
 ## [0.4.0] - 2026-09-05
 
