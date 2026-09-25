@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.4.1] - 2026-09-25
 
 - Fixed a crash in `NOSJ.generate`: an object whose `to_json` or
   `to_s` shrank the array being generated (for example with
