@@ -28,18 +28,14 @@ pub(super) fn mode_cacheable(mode: EscapeMode) -> bool {
     matches!(mode, EscapeMode::Standard | EscapeMode::HtmlSafe)
 }
 
-/// A hash key's kind, for json 3's duplicate-key rule. Discriminants
-/// start at 1: [`MixedKeys`] keeps 0 for "no key seen yet".
+/// A hash key's kind: how it renders (see [`key_string`]) and json 3's
+/// duplicate-key rule.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 enum KeyKind {
-    String = 1,
-    Symbol = 2,
-    Other = 3,
+    String,
+    Symbol,
+    Other,
 }
-
-/// [`MixedKeys::first`] before a hash's first key.
-const NO_KEY_YET: u8 = 0;
 
 #[inline(always)]
 fn key_kind(k: VALUE) -> KeyKind {
@@ -56,14 +52,24 @@ fn key_kind(k: VALUE) -> KeyKind {
     }
 }
 
+/// The String a key renders as, the gem's key coercion: Strings as they
+/// are, Symbols by name, anything else through `to_s`.
+fn key_string(k: VALUE, kind: KeyKind) -> Result<VALUE, Error> {
+    match kind {
+        KeyKind::String => Ok(k),
+        KeyKind::Symbol => Ok(unsafe { rb_sys::rb_sym2str(k) }),
+        KeyKind::Other => protected_to_s(k),
+    }
+}
+
 /// json 3's cheap trigger for its duplicate-key check, per hash: keys of
 /// one kind cannot render alike, so only a String or Symbol key in a
 /// hash whose first key was of another kind runs the full check (once).
-/// A key of the first key's kind costs one byte compare, a hash's first
-/// key one more; only actual mixing goes out of line.
+/// A key of the first key's kind costs one byte compare (the Option
+/// packs into one byte), a hash's first key one more; only actual
+/// mixing goes out of line.
 struct MixedKeys {
-    /// The first key's kind as its discriminant, or [`NO_KEY_YET`].
-    first: u8,
+    first: Option<KeyKind>,
     /// Checked already, or `allow_duplicate_key`: nothing left to do.
     done: bool,
 }
@@ -72,21 +78,21 @@ impl MixedKeys {
     #[inline(always)]
     fn new(allow_duplicate_key: bool) -> Self {
         MixedKeys {
-            first: NO_KEY_YET,
+            first: None,
             done: allow_duplicate_key,
         }
     }
 
     #[inline(always)]
     fn needs_check(&mut self, kind: KeyKind) -> bool {
-        if kind as u8 == self.first {
-            return false;
+        match self.first {
+            Some(first) if first == kind => false,
+            None => {
+                self.first = Some(kind);
+                false
+            }
+            Some(_) => self.mixed(kind),
         }
-        if self.first == NO_KEY_YET {
-            self.first = kind as u8;
-            return false;
-        }
-        self.mixed(kind)
     }
 
     #[cold]
@@ -290,7 +296,7 @@ impl Gen<'_> {
         if comma {
             self.out.push(b',');
         }
-        self.emit_key(k)?;
+        self.emit_key(k, kind)?;
         self.out.push(b':');
         Ok(())
     }
@@ -335,23 +341,13 @@ impl Gen<'_> {
         Ok(())
     }
 
-    /// Object/hash key: String and Symbol direct, anything else via to_s
-    /// (the gem's key coercion).
-    fn emit_key(&mut self, k: VALUE) -> Result<(), ()> {
-        if !is_special_const(k) {
-            match unsafe { RB_BUILTIN_TYPE(k) } {
-                ruby_value_type::RUBY_T_STRING => return self.emit_key_cached(k),
-                ruby_value_type::RUBY_T_SYMBOL => {
-                    let s = unsafe { rb_sys::rb_sym2str(k) };
-                    return self.emit_rstring_quoted(s);
-                }
-                _ => {}
-            }
-        } else if STATIC_SYM_P(k) {
-            let s = unsafe { rb_sys::rb_sym2str(k) };
-            return self.emit_rstring_quoted(s);
+    /// Object/hash key of `kind` (the caller's [`key_kind`]), rendered
+    /// by [`key_string`]; String keys go through the pre-escaped cache.
+    fn emit_key(&mut self, k: VALUE, kind: KeyKind) -> Result<(), ()> {
+        if kind == KeyKind::String {
+            return self.emit_key_cached(k);
         }
-        let s = self.reraise(protected_to_s(k))?;
+        let s = self.reraise(key_string(k, kind))?;
         self.emit_rstring_quoted(s)
     }
 
@@ -407,16 +403,12 @@ impl Gen<'_> {
         // SAFETY: only reached for T_HASH values.
         unsafe {
             foreach_raw(hash, |k, _| {
-                let key_str = match key_kind(k) {
-                    KeyKind::String => k,
-                    KeyKind::Symbol => rb_sys::rb_sym2str(k),
-                    KeyKind::Other => match protected_to_s(k) {
-                        Ok(s) => s,
-                        Err(exc) => {
-                            outcome = Err(exc);
-                            return Step::Stop;
-                        }
-                    },
+                let key_str = match key_string(k, key_kind(k)) {
+                    Ok(s) => s,
+                    Err(exc) => {
+                        outcome = Err(exc);
+                        return Step::Stop;
+                    }
                 };
                 if seen.insert(rstring_bytes(key_str).to_vec()) {
                     Step::Continue
@@ -645,7 +637,8 @@ impl Gen<'_> {
             let mut first = true;
             unsafe {
                 foreach_raw(hash, |k, v| {
-                    if mixed.needs_check(key_kind(k)) && self.check_duplicate_keys(hash).is_err() {
+                    let kind = key_kind(k);
+                    if mixed.needs_check(kind) && self.check_duplicate_keys(hash).is_err() {
                         return Step::Stop;
                     }
                     if !first {
@@ -654,7 +647,7 @@ impl Gen<'_> {
                     first = false;
                     self.out.extend_from_slice(&self.cfg.object_nl);
                     self.push_indent(inner);
-                    if self.emit_key(k).is_err() {
+                    if self.emit_key(k, kind).is_err() {
                         return Step::Stop;
                     }
                     self.out.extend_from_slice(&self.cfg.space_before);
