@@ -80,6 +80,8 @@ RSpec.describe "require 'nosj/json' drop-in" do
       same("NaN", :generate, [Float::NAN])
       same("broken UTF-8", :generate, ["\xff".dup.force_encoding(Encoding::UTF_8)])
       same("escape_slash", :generate, ["/"], escape_slash: true)
+      same("ascii_only with script_safe", :generate, ["/é "], ascii_only: true, script_safe: true)
+      same("ascii_only with script_safe, dumped", :dump, ["/é"], {ascii_only: true, script_safe: true})
       same("unknown generate option", :generate, [1], bogus: true)
       deep = []
       150.times.reduce(deep) { |a, _| (a << []).last }

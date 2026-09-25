@@ -55,6 +55,9 @@ The `nosj/json` drop-in follows the installed json gem:
 - Fixed: `JSON.dump` raised NameError (`_dump_default_options`) with
   json older than 2.11, which includes the json bundled with Ruby 3.3
   and 3.4.
+- Fixed: `JSON.generate` (and `pretty_generate`, `dump`) with both
+  `ascii_only` and `script_safe` raised ArgumentError; that combination,
+  which nosj does not implement, now goes to the gem.
 
 ## [0.4.1] - 2026-09-25
 

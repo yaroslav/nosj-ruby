@@ -69,6 +69,13 @@ module NOSJ
       true
     end
 
+    # Generate options the fast path handles: supported keys, minus the
+    # one combination NOSJ refuses (ascii_only with script_safe, which
+    # json supports).
+    def generate_supported?(opts)
+      supported?(opts, GENERATE_OPTS) && !(opts && opts[:ascii_only] && opts[:script_safe])
+    end
+
     def parse(source, opts)
       # NOSJ.parse is deliberately strict about encodings (json-3.0
       # semantics), but the drop-in must match the installed gem, which
@@ -167,7 +174,7 @@ module JSON
       end
 
       def generate(obj, opts = nil)
-        if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+        if NOSJ::JSONDropIn.generate_supported?(opts)
           NOSJ::JSONDropIn.generate(obj, opts, false)
         else
           nosj_original_generate(obj, opts)
@@ -175,7 +182,7 @@ module JSON
       end
 
       def pretty_generate(obj, opts = nil)
-        if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+        if NOSJ::JSONDropIn.generate_supported?(opts)
           NOSJ::JSONDropIn.generate(obj, opts, true)
         else
           nosj_original_pretty_generate(obj, opts)
@@ -192,7 +199,7 @@ module JSON
             (an_io.nil? || NOSJ::JSONDropIn::DUMP_MERGES_OPTIONS && an_io.instance_of?(Hash))
           opts = NOSJ::JSONDropIn.dump_defaults
           opts = opts.merge(an_io) if an_io
-          if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+          if NOSJ::JSONDropIn.generate_supported?(opts)
             begin
               return NOSJ.generate(obj, opts)
             rescue NOSJ::GeneratorError, NOSJ::NestingError
