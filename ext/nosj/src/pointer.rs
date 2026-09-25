@@ -19,8 +19,8 @@ fn at_pointer_impl(
 ) -> Result<Value, Error> {
     use magnus::value::ReprValue;
     let input = utf8_input(ruby, &data)?;
-    // Resolve first (one PULL_STATE borrow), then materialize (a fresh
-    // borrow); the resolved slice borrows `input`, not the buffers.
+    // Resolve, then materialize, as two separate uses of the parse
+    // state; the resolved slice borrows `input`, not the state.
     let resolved = with_pull_state(|state| {
         // Safety: coderange verified above.
         unsafe { nosj::pointer_utf8_unchecked_with(input, pointer, &mut state.bufs, o.popts) }
@@ -124,8 +124,8 @@ fn at_pointers_impl(
     let input = utf8_input(ruby, &data)?;
     let live: Vec<&str> = pointers.iter().flatten().map(String::as_str).collect();
 
-    // Resolve first (one PULL_STATE borrow); the resolved slices borrow
-    // `input`, not the buffers, so materializing can re-borrow freely.
+    // Resolve first (one use of the parse state); the resolved slices
+    // borrow `input`, not the state, so each materializes separately.
     let resolved = with_pull_state(|state| {
         // Safety: coderange verified by utf8_input.
         unsafe { nosj::pointers_utf8_unchecked_with(input, &live, &mut state.bufs, o.popts) }

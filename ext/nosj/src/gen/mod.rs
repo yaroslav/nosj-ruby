@@ -31,6 +31,7 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 use std::cell::Cell;
 
+use crate::state::with_taken;
 use errors::raise_fail;
 use keys::GenKeyCache;
 pub(crate) use ruby::warm_up;
@@ -57,6 +58,7 @@ struct GenScratch {
 }
 
 impl GenScratch {
+    #[cold]
     fn fresh() -> Box<Self> {
         Box::new(GenScratch {
             buf: Vec::new(),
@@ -70,17 +72,13 @@ thread_local! {
     static GEN_SCRATCH: Cell<Option<Box<GenScratch>>> = const { Cell::new(None) };
 }
 
-/// Run `f` on this thread's scratch, then store it back, replacing one a
-/// recursive generate stored meanwhile (the outermost call's is the warm
-/// one; the replaced scratch's key cache keeps its shadow, exactly as
-/// the old fallback arm's did).
+/// Run `f` on this thread's scratch (see [`with_taken`]). A recursive
+/// generate stores its own fresh scratch meanwhile; the outermost call's
+/// warm one replaces it (the replaced key cache keeps its shadow).
 fn with_scratch<R>(f: impl FnOnce(&mut GenScratch) -> R) -> R {
-    let mut scratch = GEN_SCRATCH
-        .with(Cell::take)
-        .unwrap_or_else(GenScratch::fresh);
-    let result = f(&mut scratch);
-    GEN_SCRATCH.with(|cell| cell.set(Some(scratch)));
-    result
+    with_taken(&GEN_SCRATCH, |slot| {
+        f(slot.get_or_insert_with(GenScratch::fresh))
+    })
 }
 
 /// `NOSJ.generate(obj, opts = nil)`, registered as a variadic native

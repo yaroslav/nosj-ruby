@@ -11,17 +11,35 @@ use magnus::typed_data::Obj;
 use magnus::{DataTypeFunctions, TypedData};
 use nosj::Buffers;
 use std::cell::Cell;
+use std::thread::LocalKey;
 
-/// Everything a parse touches, allocated once per thread and reused:
-/// nosj's scratch buffers, the interned-key caches, and the GC-marked
-/// stacks.
+/// Run `f` on a pooled thread-local value, taken OUT of its cell for the
+/// call and stored back afterwards. Pooled state is never borrowed
+/// across a call that can reach Ruby: any allocation can raise
+/// NoMemoryError, whose longjmp skips these frames, and a RefCell borrow
+/// held across it would stay borrowed for good (under panic=abort, the
+/// next borrow kills the process). A value lost that way is only leaked;
+/// the next call, like a nested one finding the cell empty, starts from
+/// `T::default()`. The outermost call's value is the one stored back.
+pub(crate) fn with_taken<T: Default, R>(
+    key: &'static LocalKey<Cell<T>>,
+    f: impl FnOnce(&mut T) -> R,
+) -> R {
+    let mut value = key.take();
+    let result = f(&mut value);
+    key.set(value);
+    result
+}
+
+/// Everything a parse touches, reused across calls: nosj's scratch
+/// buffers, the interned-key caches, and the GC-marked stacks.
 pub(crate) struct PullState {
     pub(crate) bufs: Buffers,
     pub(crate) keys: AHashMap<Box<str>, rb_sys::VALUE>,
     /// Separate cache for symbolize_names mode: symbol and string VALUEs
     /// must never share a map.
     pub(crate) sym_keys: AHashMap<Box<str>, rb_sys::VALUE>,
-    /// Leaked once per thread; kept alive + GC-marked via the wrapped
+    /// Leaked once per state; kept alive + GC-marked via the wrapped
     /// handle.
     pub(crate) vstack: Option<&'static mut VStackShadow>,
     /// Marked shadow holding the cached key VALUEs; keys are kept alive by
@@ -30,6 +48,7 @@ pub(crate) struct PullState {
 }
 
 impl PullState {
+    #[cold]
     fn fresh() -> Box<Self> {
         Box::new(PullState {
             bufs: Buffers::new(),
@@ -45,20 +64,13 @@ thread_local! {
     static PULL_STATE: Cell<Option<Box<PullState>>> = const { Cell::new(None) };
 }
 
-/// Run `f` on this thread's parse state, taken OUT of the thread-local
-/// for the call and stored back afterwards (the generate scratch's
-/// pattern, gen/mod.rs). Parses allocate Ruby objects, and a failed
-/// allocation raises NoMemoryError, which longjmps over these frames: a
-/// RefCell borrow held across it stayed borrowed for good, and the next
-/// parse on the thread panicked, aborting the process under
-/// panic=abort. Here a lost state is merely leaked (its shadows keep
-/// their last VALUEs alive) and the next call starts a fresh one; an
-/// empty cell likewise serves a nested call.
+/// Run `f` on this thread's parse state (see [`with_taken`]; a state
+/// lost to a longjmp leaks its shadows' last VALUEs). Entries finish
+/// one use before the next: a nested call would start a fresh state.
 pub(crate) fn with_pull_state<R>(f: impl FnOnce(&mut PullState) -> R) -> R {
-    let mut state = PULL_STATE.with(Cell::take).unwrap_or_else(PullState::fresh);
-    let result = f(&mut state);
-    PULL_STATE.with(|cell| cell.set(Some(state)));
-    result
+    with_taken(&PULL_STATE, |slot| {
+        f(slot.get_or_insert_with(PullState::fresh))
+    })
 }
 
 /// GC-marked holder for pending VALUEs.
@@ -102,7 +114,7 @@ impl DataTypeFunctions for ShadowHandle {
     }
 }
 
-/// Create (once per thread) a leaked, GC-marked VStackShadow.
+/// Create (once per owning state) a leaked, GC-marked VStackShadow.
 pub(crate) fn ensure_marked_shadow(slot: &mut Option<&'static mut VStackShadow>) {
     if slot.is_none() {
         let ruby = magnus::Ruby::get().expect("called on a Ruby thread");

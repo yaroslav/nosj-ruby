@@ -146,8 +146,8 @@ fn resolved_to_value(ruby: &Ruby, doc: &Arc<DocInner>, sub: &[u8]) -> Result<Val
 /// Resolve `pointer` within `node`'s span. Shared by `__get` and
 /// `__at_pointer`; both misses and negative-index paths return nil.
 fn resolve_in_span(ruby: &Ruby, node: &LazyNode, pointer: &str) -> Result<Value, Error> {
-    // Resolve first (one PULL_STATE borrow, slice borrows the doc, not
-    // the buffers), then materialize (which re-borrows internally).
+    // Resolve, then materialize, as two separate uses of the parse
+    // state; the resolved slice borrows the doc, not the state.
     let resolved = with_pull_state(|state| {
         // SAFETY: doc bytes were coderange-gated at NOSJ.lazy creation,
         // and spans lie on token edges, so the span is valid UTF-8.
@@ -385,8 +385,8 @@ struct ChildDesc {
 
 /// `__children`: every direct child in ONE walk. Objects yield
 /// `[key, child]` pairs, arrays yield children; containers wrap lazily,
-/// scalars materialize. Two phases so the Reader's buffer borrow ends
-/// before materialization re-borrows the thread state.
+/// scalars materialize. Two phases so the walk's use of the parse state
+/// ends before materialization needs it (nested, it would start fresh).
 pub fn lazy_children(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
     let base = rb_self.doc.bytes().as_ptr() as usize;
     let descs: Result<Vec<ChildDesc>, nosj::ParseError> = with_pull_state(|state| {
