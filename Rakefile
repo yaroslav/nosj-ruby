@@ -5,7 +5,11 @@ require "rspec/core/rake_task"
 
 RSpec::Core::RakeTask.new(:spec)
 
-require "standard/rake"
+begin
+  require "standard/rake"
+rescue LoadError
+  # CI's json-compat runs bundle without the development tools (see Gemfile).
+end
 
 require "rb_sys/extensiontask"
 

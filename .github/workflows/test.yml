@@ -78,3 +78,40 @@ jobs:
 
       - name: Run the Rails-facing specs
         run: bundle exec rspec spec/rails_spec.rb spec/rails_integration_spec.rb spec/json_dropin_spec.rb
+
+  # The whole suite against json 3 (the main matrix runs the locked json
+  # 2.x): the drop-in follows whichever is installed, and the parity
+  # specs compare against it.
+  json-compat:
+    name: json ${{ matrix.json }} on Ruby ${{ matrix.ruby }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { json: "~> 3.0", ruby: "3.3" }
+          - { json: "~> 3.0", ruby: "4.0" }
+    env:
+      NOSJ_JSON_VERSION: ${{ matrix.json }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Ruby & Rust
+        uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          cargo-cache: true
+
+      # The committed lockfile pins json 2.x; the pin needs a fresh
+      # resolution.
+      - name: Bundle with the pinned json
+        run: |
+          rm Gemfile.lock
+          bundle install
+
+      - name: Compile native extension
+        run: bundle exec rake compile
+
+      - name: Run specs
+        run: bundle exec rake spec
