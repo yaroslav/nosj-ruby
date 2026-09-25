@@ -7,7 +7,7 @@ use magnus::rb_sys::AsRawValue;
 use magnus::value::ReprValue;
 use magnus::{Error, Ruby};
 
-use super::ruby::rstring_bytes;
+use super::ruby::{protected_to_s, rstring_bytes};
 use crate::errors::nosj_exception;
 
 pub(super) enum GenFail {
@@ -24,26 +24,28 @@ pub(super) enum GenFail {
 }
 
 /// The exception's `to_s` (its message), matching what the gem embeds
-/// when it wraps a secondary exception.
-fn error_message(err: &Error) -> String {
+/// when it wraps a secondary exception. Protected: an exception class
+/// may override `to_s`, and a raise there propagates in place of the
+/// GeneratorError (as it does from the gem).
+fn error_message(err: &Error) -> Result<String, Error> {
     if let ErrorType::Exception(exc) = err.error_type() {
-        let s = unsafe { rb_sys::rb_obj_as_string(exc.as_value().as_raw()) };
+        let s = protected_to_s(exc.as_value().as_raw())?;
         // Safety: rb_obj_as_string returns a T_STRING; the bytes are
         // copied into an owned String before any further Ruby call.
         let bytes = unsafe { rstring_bytes(s) };
-        return String::from_utf8_lossy(bytes).into_owned();
+        return Ok(String::from_utf8_lossy(bytes).into_owned());
     }
-    err.to_string()
+    Ok(err.to_string())
 }
 
 pub(super) fn raise_fail(ruby: &Ruby, fail: GenFail) -> Error {
     match fail {
         GenFail::Reraise(err) => err,
         GenFail::Generator(msg) => Error::new(nosj_exception(ruby, "GeneratorError"), msg),
-        GenFail::GeneratorFrom(err) => {
-            let msg = error_message(&err);
-            Error::new(nosj_exception(ruby, "GeneratorError"), msg)
-        }
+        GenFail::GeneratorFrom(err) => match error_message(&err) {
+            Ok(msg) => Error::new(nosj_exception(ruby, "GeneratorError"), msg),
+            Err(raised) => raised,
+        },
         GenFail::Nesting(limit) => Error::new(
             nosj_exception(ruby, "NestingError"),
             format!(

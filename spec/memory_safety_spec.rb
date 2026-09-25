@@ -122,6 +122,28 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "raising Exception#to_s on the GeneratorError path" do
+    it "propagates the exception without leaking the generate scratch" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        # BINARY high bytes fail UTF-8 conversion; the generator wraps
+        # the conversion error's message into GeneratorError.
+        class Encoding::UndefinedConversionError
+          def to_s = raise(ArgumentError, "boom in to_s")
+        end
+        def hostile_call = NOSJ.generate(["\\xFF\\xFE".b])
+        begin
+          hostile_call
+          raise "no exception"
+        rescue ArgumentError => e
+          raise "wrong exception: \#{e.message}" unless e.message == "boom in to_s"
+        end
+        #{leak_check}
+        puts "ALL-OK"
+      RUBY
+    end
+  end
+
   describe "NOSJ.lazy over a frozen source" do
     # Deduplicating a frozen String subclass (or one carrying an ivar)
     # swaps its heap buffer and frees the old one; lazy nodes borrow
