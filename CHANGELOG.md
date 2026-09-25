@@ -1,3 +1,64 @@
+## [Unreleased]
+
+**json 3.0 compatibility.** nosj now matches the behavior of the json
+gem 3.0, and stays compatible with both the json 2.x and 3.0
+interfaces: `NOSJ.parse`, `NOSJ.generate`, and the rest of nosj's own
+API follow json 3.0 semantics, while the `nosj/json` drop-in follows
+whichever json gem your application has installed, 2.x or 3.0, down to
+its calling conventions and the documents it accepts. Upgrading json
+(or not) is your choice; nosj works with either.
+
+Behavior changes in nosj's own API, for input that was accepted
+before:
+
+- Duplicate object keys raise `NOSJ::ParserError` (positioned at the
+  object repeating the key, like json 3) in `parse`, `load_file`,
+  `valid?` (returns false), `minify`/`reformat`, and everything that
+  materializes values. `allow_duplicate_key: true` restores the old
+  behavior: the last value wins (in `minify`, repeated keys pass
+  through).
+- Lone UTF-16 surrogates such as `"\udc00"` raise `NOSJ::ParserError`
+  everywhere, trailing ones included (they used to decode to raw
+  WTF-8 bytes, and `minify` re-escaped them).
+- `generate` raises `NOSJ::GeneratorError` for keys that render alike
+  (`{"a" => 1, :a => 2}`, `{1 => 1, "1" => 2}`), with json 3's exact
+  message; `allow_duplicate_key: true` emits them as before. Hashes
+  whose keys are all of one kind are never checked. The Rails encoder
+  is unchanged.
+- `stats` still describes such documents rather than refusing them.
+- Unknown options raise ArgumentError with json 3's message
+  (`unknown keyword: foo`) in every entry point, instead of being
+  ignored. json options nosj does not implement (`object_class`,
+  `array_class`, `decimal_class`, `on_load`, `create_additions`,
+  `allow_comments`, `allow_control_characters`,
+  `allow_invalid_escape`, `sort_keys`, `as_json`) raise unless falsy;
+  `on_load` and the newer ones used to be silently ignored.
+  `escape_slash` is gone, as in json 3: use `script_safe`.
+  `quirks_mode` is no longer accepted. `stats` takes only the options
+  it documents (`max_nesting`, `allow_nan`, `allow_trailing_comma`).
+
+The `nosj/json` drop-in follows the installed json gem:
+
+- With json 3.0, `JSON.parse` takes keyword options only, `JSON.dump`
+  uses json 3's defaults (nesting capped at 100), and whatever json 3
+  refuses (`quirks_mode`, `escape_slash`, `create_additions`, unknown
+  options, positional option hashes) raises exactly as json 3 raises.
+- With json 2.x, everything behaves as before, including json 2's
+  acceptance of duplicate keys, lone surrogates, and comments, and
+  its handling of keys that render alike.
+- Whenever the fast path refuses a call, the installed gem runs it
+  again and decides: exceptions are now the gem's own (message,
+  `json_path`, `invalid_object`) rather than nosj's messages re-raised
+  as JSON classes. The second pass happens on failures only, and a
+  `generate` run twice this way calls `to_json` again on the objects
+  visited before the refusal.
+- Fixed: `JSON.dump` raised NameError (`_dump_default_options`) with
+  json older than 2.11, which includes the json bundled with Ruby 3.3
+  and 3.4.
+- Fixed: `JSON.generate` (and `pretty_generate`, `dump`) with both
+  `ascii_only` and `script_safe` raised ArgumentError; that combination,
+  which nosj does not implement, now goes to the gem.
+
 ## [0.4.1] - 2026-09-25
 
 - Fixed a crash in `NOSJ.generate`: an object whose `to_json` or

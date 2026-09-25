@@ -6,8 +6,10 @@
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
-use crate::errors::{nesting_error, parser_error, parser_error_at};
-use crate::sink::{NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
+use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
+use crate::locate::Repeat;
+use crate::opt_reader::{Opt, OptReader};
+use crate::sink::{DupKeys, NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
 use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
 
 pub(crate) use crate::errors::parser_error as err;
@@ -51,6 +53,8 @@ pub(crate) struct ParseNativeOpts {
     pub(crate) symbolize: bool,
     pub(crate) freeze: bool,
     pub(crate) max_nesting: usize,
+    /// json 3 default: a repeated key raises.
+    pub(crate) allow_duplicate_key: bool,
     pub(crate) popts: nosj::ParseOptions,
 }
 
@@ -60,111 +64,171 @@ impl Default for ParseNativeOpts {
             symbolize: false,
             freeze: false,
             max_nesting: MAX_NESTING,
+            allow_duplicate_key: false,
             popts: nosj::ParseOptions::default(),
         }
     }
 }
 
-/// Decode a JSON.parse-compatible options hash: symbolize_names, freeze,
-/// max_nesting, allow_nan, allow_trailing_comma. Unsupported gem options
-/// (object_class, array_class, decimal_class, create_additions) raise.
+/// Decode a JSON.parse-compatible options hash (see [`read_parse_opts`]);
+/// keys it does not read raise ArgumentError, like json 3.
 pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeOpts, Error> {
-    use magnus::value::ReprValue;
-    use magnus::RHash;
-
-    let mut out = ParseNativeOpts::default();
-    if opts.is_nil() {
-        return Ok(out);
-    }
-    let h = RHash::from_value(opts)
-        .ok_or_else(|| Error::new(ruby.exception_arg_error(), "options must be a Hash"))?;
-
-    let truthy = |name: &str| -> bool {
-        h.get(ruby.to_symbol(name))
-            .is_some_and(|v: Value| v.to_bool())
+    let Some(h) = options_hash(ruby, opts)? else {
+        return Ok(ParseNativeOpts::default());
     };
-
-    out.symbolize = truthy("symbolize_names");
-    out.freeze = truthy("freeze");
-    out.popts.allow_nan = truthy("allow_nan");
-    out.popts.allow_trailing_comma = truthy("allow_trailing_comma");
-
-    if let Some(mn) = h.get(ruby.to_symbol("max_nesting")) {
-        out.max_nesting =
-            if mn.is_nil() || mn.to_bool() && magnus::Integer::from_value(mn).is_none() {
-                MAX_NESTING // nil / true: gem default
-            } else if !mn.to_bool() {
-                usize::MAX // false: unlimited
-            } else {
-                magnus::Integer::from_value(mn)
-                    .and_then(|i| i.to_u64().ok())
-                    .map_or(MAX_NESTING, |n| n as usize)
-            };
-    }
-
-    for unsupported in [
-        "object_class",
-        "array_class",
-        "decimal_class",
-        "create_additions",
-    ] {
-        if truthy(unsupported) {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                format!("NOSJ.parse does not support the {unsupported} option"),
-            ));
-        }
-    }
+    let mut reader = OptReader::new(ruby, h);
+    let out = read_parse_opts(&mut reader)?;
+    reader.finish()?;
     Ok(out)
 }
 
-/// Pop the root value off the sink stack, or map a drive failure onto
-/// the gem's exceptions. Shared by every driver. `source`/`base` locate
-/// the driven bytes within the full document, so ParserError positions
-/// stay absolute when a subtree slice was parsed.
+/// The non-empty options Hash in `opts`, or None for nil and `{}`
+/// (json 3's keyword-only parse hands the drop-in an empty hash per
+/// call).
+pub(crate) fn options_hash(ruby: &Ruby, opts: Value) -> Result<Option<magnus::RHash>, Error> {
+    use magnus::value::ReprValue;
+    if opts.is_nil() {
+        return Ok(None);
+    }
+    let h = magnus::RHash::from_value(opts)
+        .ok_or_else(|| Error::new(ruby.exception_arg_error(), "options must be a Hash"))?;
+    Ok((!h.is_empty()).then_some(h))
+}
+
+/// Read symbolize_names, freeze, max_nesting, allow_nan,
+/// allow_trailing_comma and allow_duplicate_key. The json options NOSJ
+/// does not implement (object_class, array_class, decimal_class,
+/// on_load, create_additions, allow_comments, allow_control_characters,
+/// allow_invalid_escape) raise unless falsy.
+pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Error> {
+    let mut out = ParseNativeOpts {
+        symbolize: r.truthy(Opt::SymbolizeNames),
+        freeze: r.truthy(Opt::Freeze),
+        allow_duplicate_key: r.truthy(Opt::AllowDuplicateKey),
+        ..ParseNativeOpts::default()
+    };
+    out.popts.allow_nan = r.truthy(Opt::AllowNan);
+    out.popts.allow_trailing_comma = r.truthy(Opt::AllowTrailingComma);
+
+    if let Some(mn) = r.get(Opt::MaxNesting) {
+        out.max_nesting = max_nesting_of(mn);
+    }
+
+    r.tolerate(&[
+        Opt::ObjectClass,
+        Opt::ArrayClass,
+        Opt::DecimalClass,
+        Opt::OnLoad,
+        Opt::CreateAdditions,
+        Opt::AllowComments,
+        Opt::AllowControlCharacters,
+        Opt::AllowInvalidEscape,
+    ]);
+    Ok(out)
+}
+
+/// A given `max_nesting` value as a limit: nil or true keep the gem's
+/// default, false is unlimited, an Integer is the limit.
+pub(crate) fn max_nesting_of(value: Value) -> usize {
+    use magnus::value::ReprValue;
+    if value.is_nil() || value.to_bool() && magnus::Integer::from_value(value).is_none() {
+        MAX_NESTING
+    } else if !value.to_bool() {
+        usize::MAX
+    } else {
+        magnus::Integer::from_value(value)
+            .and_then(|i| i.to_u64().ok())
+            .map_or(MAX_NESTING, |n| n as usize)
+    }
+}
+
+pub(crate) type DriveResult = Result<(), nosj::DriveError<SinkAbort>>;
+
+/// A drive's failure as the gem's exception; shared by every driver.
+/// `source[start..end]` is what was driven, within the full document,
+/// so ParserError positions stay absolute when a subtree slice was
+/// parsed. Sinks see no offsets, so their two document refusals are
+/// positioned by a cold-path re-walk (`crate::locate`).
+pub(crate) fn drive_error(
+    ruby: &Ruby,
+    failure: nosj::DriveError<SinkAbort>,
+    o: &ParseNativeOpts,
+    source: &[u8],
+    (start, end): (usize, usize),
+) -> Error {
+    use magnus::value::ReprValue;
+    use nosj::DriveError::{Parse, Sink};
+
+    let driven = &source[start..end];
+    match failure {
+        Sink(SinkAbort::Overflow) => parser_error(ruby, "document too large".into()),
+        Sink(SinkAbort::BadBigint) => parser_error(ruby, "invalid bignum".into()),
+        Sink(SinkAbort::TooDeep) => nesting_error(
+            ruby,
+            format!("nesting of {} is too deep", o.max_nesting.saturating_add(1)),
+        ),
+        // Positioned like json 3's: at the `{` of the object repeating
+        // the key.
+        Sink(SinkAbort::DuplicateKey) => match crate::locate::duplicate_key(driven, o.popts) {
+            Repeat::Found { at, key } => parser_error_at(
+                ruby,
+                source,
+                start + at,
+                format!(
+                    "duplicate key {} at byte {at}",
+                    ruby.str_new(&key).inspect()
+                ),
+            ),
+            Repeat::Absent | Repeat::Undecided => parser_error(ruby, "duplicate key".into()),
+        },
+        Sink(SinkAbort::LoneSurrogate) => match crate::locate::first_walk_error(driven, o.popts) {
+            Some(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
+            None => parser_error(ruby, "lone UTF-16 surrogate".into()),
+        },
+        // Only the reformat pipe raises it: generation refuses a
+        // non-finite float, with the gem's GeneratorError.
+        Sink(SinkAbort::NonFiniteFloat(spelling)) => Error::new(
+            nosj_exception(ruby, "GeneratorError"),
+            format!("{spelling} not allowed in JSON"),
+        ),
+        Parse(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
+    }
+}
+
+/// Drive a sink that builds no Hash (`valid?`, the reformat pipe) under
+/// json 3's duplicate-key rule. `drive(check_dups)` runs the parse. With
+/// the check on, `DupKeys` compares key fingerprints, so a refusal is
+/// confirmed exactly, and a collision (no object really repeats a key)
+/// drives again with the check off.
+pub(crate) fn drive_hashless(
+    input: &[u8],
+    o: &ParseNativeOpts,
+    mut drive: impl FnMut(bool) -> DriveResult,
+) -> DriveResult {
+    let result = drive(!o.allow_duplicate_key);
+    if matches!(result, Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)))
+        && matches!(crate::locate::duplicate_key(input, o.popts), Repeat::Absent)
+    {
+        return drive(false);
+    }
+    result
+}
+
+/// Pop the root value off the sink stack, or raise the drive's failure
+/// (see [`drive_error`]).
 fn finish_drive(
     ruby: &Ruby,
-    result: Result<(), nosj::DriveError<SinkAbort>>,
+    result: DriveResult,
     stack: &mut Vec<rb_sys::VALUE>,
-    max_nesting: usize,
+    o: &ParseNativeOpts,
     source: &[u8],
-    base: usize,
+    span: (usize, usize),
 ) -> Result<Value, Error> {
-    match result {
-        Ok(()) => {
-            let raw = stack
-                .pop()
-                .unwrap_or(rb_sys::special_consts::Qnil as rb_sys::VALUE);
-            Ok(unsafe { Value::from_raw(raw) })
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::Overflow)) => {
-            Err(parser_error(ruby, "document too large".into()))
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::BadBigint)) => {
-            Err(parser_error(ruby, "invalid bignum".into()))
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-            ruby,
-            format!("nesting of {} is too deep", max_nesting.saturating_add(1)),
-        )),
-        // Raised only by the reformat pipe's sink, which never drives
-        // through here; the match must stay total.
-        Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(parser_error(
-            ruby,
-            "source sequence is illegal/malformed utf-8".into(),
-        )),
-        // Also reformat-pipe-only, kept total for the same reason.
-        Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(parser_error(
-            ruby,
-            format!("{spelling} not allowed in JSON"),
-        )),
-        Err(nosj::DriveError::Parse(e)) => Err(parser_error_at(
-            ruby,
-            source,
-            base + e.offset,
-            e.to_string(),
-        )),
-    }
+    result.map_err(|failure| drive_error(ruby, failure, o, source, span))?;
+    let raw = stack
+        .pop()
+        .unwrap_or(rb_sys::special_consts::Qnil as rb_sys::VALUE);
+    Ok(unsafe { Value::from_raw(raw) })
 }
 
 /// Drive the fused cursor over the whole of `source`. See
@@ -207,13 +271,14 @@ pub(crate) fn materialize_at(
             symbolize: o.symbolize,
             freeze: o.freeze,
             max_nesting: o.max_nesting,
+            allow_duplicate_key: o.allow_duplicate_key,
         };
 
         // Safety: callers verified UTF-8 (coderange or nosj slice).
         let result = unsafe {
             nosj::parse_utf8_unchecked_with(&source[start..end], bufs, &mut sink, o.popts)
         };
-        finish_drive(ruby, result, sink.stack, o.max_nesting, source, start)
+        finish_drive(ruby, result, sink.stack, o, source, (start, end))
     })
 }
 
@@ -243,14 +308,16 @@ pub fn valid_native(
     let Ok(input) = utf8_input(ruby, &data) else {
         return Ok(false);
     };
-    let ok = with_pull_state(|state| {
-        let mut sink = NullSink {
-            depth: 0,
-            max_nesting: o.max_nesting,
-        };
-        // Safety: coderange verified by utf8_input.
-        unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
-            .is_ok()
+    let result = drive_hashless(input, &o, |check_dups| {
+        with_pull_state(|state| {
+            let mut sink = NullSink {
+                depth: 0,
+                max_nesting: o.max_nesting,
+                dup_keys: DupKeys::new(&mut state.dup, check_dups),
+            };
+            // Safety: coderange verified by utf8_input.
+            unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
+        })
     });
-    Ok(ok)
+    Ok(result.is_ok())
 }

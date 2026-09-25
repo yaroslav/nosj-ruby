@@ -8,9 +8,9 @@ use ahash::AHashMap;
 use magnus::value::ReprValue;
 use magnus::{Error, RHash, RString, Ruby, Value};
 
-use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
-use crate::parse::{parse_native_opts, utf8_input};
+use crate::opt_reader::{Opt, OptReader};
+use crate::parse::{drive_error, max_nesting_of, options_hash, utf8_input, ParseNativeOpts};
 use crate::sink::SinkAbort;
 use crate::state::with_pull_state;
 
@@ -239,40 +239,41 @@ fn stats_to_hash(ruby: &Ruby, s: &StatsSink, byte_size: usize) -> Result<Value, 
     Ok(out.as_value())
 }
 
-/// Run the counting pass over already-UTF-8-vouched bytes and build
-/// the result. `max_nesting` here defaults to UNLIMITED (a deep blob
-/// is exactly what a diagnostic should describe, not refuse), unless
-/// the caller passes the option explicitly.
-fn stats_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<Value, Error> {
-    let o = parse_native_opts(ruby, opts)?;
-    let nesting_given =
-        RHash::from_value(opts).is_some_and(|h| h.get(ruby.to_symbol("max_nesting")).is_some());
+/// Stats' options: `max_nesting`, which here defaults to UNLIMITED (a
+/// deep blob is exactly what a diagnostic should describe, not refuse),
+/// and the grammar extensions. Decoded before the source is borrowed:
+/// a hash lookup can run a key's own `hash`/`eql?`.
+fn stats_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeOpts, Error> {
+    let mut o = ParseNativeOpts {
+        max_nesting: usize::MAX,
+        ..ParseNativeOpts::default()
+    };
+    let Some(h) = options_hash(ruby, opts)? else {
+        return Ok(o);
+    };
+    let mut r = OptReader::new(ruby, h);
+    if let Some(v) = r.get(Opt::MaxNesting) {
+        o.max_nesting = max_nesting_of(v);
+    }
+    o.popts.allow_nan = r.truthy(Opt::AllowNan);
+    o.popts.allow_trailing_comma = r.truthy(Opt::AllowTrailingComma);
+    r.finish()?;
+    Ok(o)
+}
 
+/// Run the counting pass over already-UTF-8-vouched bytes and build
+/// the result.
+fn stats_over(ruby: &Ruby, input: &[u8], o: &ParseNativeOpts) -> Result<Value, Error> {
     let mut sink = StatsSink {
-        max_nesting: if nesting_given {
-            o.max_nesting
-        } else {
-            usize::MAX
-        },
+        max_nesting: o.max_nesting,
         ..StatsSink::default()
     };
     let result = with_pull_state(|state| {
         // Safety: callers verified UTF-8 (coderange or a full scan).
         unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
     });
-    match result {
-        Ok(()) => stats_to_hash(ruby, &sink, input.len()),
-        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-            ruby,
-            format!("nesting of {} is too deep", o.max_nesting.saturating_add(1)),
-        )),
-        // The other aborts cannot happen (this sink never raises them),
-        // but the match must be total.
-        Err(nosj::DriveError::Sink(_)) => Err(parser_error(ruby, "stats pass aborted".into())),
-        Err(nosj::DriveError::Parse(e)) => {
-            Err(parser_error_at(ruby, input, e.offset, e.to_string()))
-        }
-    }
+    result.map_err(|failure| drive_error(ruby, failure, o, input, (0, input.len())))?;
+    stats_to_hash(ruby, &sink, input.len())
 }
 
 /// `NOSJ.stats(source, opts)`: document statistics from one null-sink
@@ -283,8 +284,9 @@ pub fn stats_native(
     data: RString,
     opts: Value,
 ) -> Result<Value, Error> {
+    let o = stats_opts(ruby, opts)?;
     let input = utf8_input(ruby, &data)?;
-    stats_over(ruby, input, opts)
+    stats_over(ruby, input, &o)
 }
 
 /// `NOSJ.stats_file(path, opts)`: `NOSJ.stats` against a memory-mapped
@@ -295,6 +297,7 @@ pub fn stats_file_native(
     path: RString,
     opts: Value,
 ) -> Result<Value, Error> {
+    let o = stats_opts(ruby, opts)?;
     let p = path.to_string()?;
-    with_mapped_file(ruby, &p, |map| stats_over(ruby, &map, opts))
+    with_mapped_file(ruby, &p, |map| stats_over(ruby, &map, &o))
 }

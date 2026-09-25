@@ -13,6 +13,8 @@ use nosj::Buffers;
 use std::cell::Cell;
 use std::thread::LocalKey;
 
+use crate::sink::DupScratch;
+
 /// Run `f` on a pooled thread-local value, taken OUT of its cell for the
 /// call and stored back afterwards. Pooled state is never borrowed
 /// across a call that can reach Ruby: any allocation can raise
@@ -45,6 +47,8 @@ pub(crate) struct PullState {
     /// Marked shadow holding the cached key VALUEs; keys are kept alive by
     /// this (collectable on epoch clear), NOT by per-key eternal GC pins.
     pub(crate) key_shadow: Option<&'static mut VStackShadow>,
+    /// Duplicate-key detection buffers for hash-less sinks.
+    pub(crate) dup: DupScratch,
 }
 
 impl PullState {
@@ -56,6 +60,7 @@ impl PullState {
             sym_keys: AHashMap::new(),
             vstack: None,
             key_shadow: None,
+            dup: DupScratch::default(),
         })
     }
 }

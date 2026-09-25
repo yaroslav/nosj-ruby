@@ -48,7 +48,14 @@ module NOSJFuzz
     rescue *PARSE_FAIL
       false
     end
-    raise "stats disagrees with parse on acceptance" unless stats_ok == (status == :ok)
+    # stats describes documents rather than refusing them: it accepts
+    # everything parse accepts, plus duplicate keys and lone surrogates
+    # (json 3 refusals parse makes on top of the grammar).
+    raise "stats refused what parse accepted" if status == :ok && !stats_ok
+    if status == :err && stats_ok &&
+        try_parse(s, {allow_duplicate_key: true})[0] != :ok && !s.include?("\\u")
+      raise "stats accepted what parse refused for a grammar reason"
+    end
 
     min_status, min = begin
       [:ok, NOSJ.reformat_native(s, nil)]
@@ -59,24 +66,17 @@ module NOSJFuzz
     end
 
     if status == :err
-      # The pipe may abort with GeneratorError (lone-surrogate key,
-      # non-finite float) before the parser reaches whatever made the
-      # whole document unparseable; any refusal is a refusal.
+      # The pipe may abort with GeneratorError (a non-finite float)
+      # before the parser reaches whatever made the whole document
+      # unparseable; any refusal is a refusal.
       raise "reformat accepted what parse refused" unless [:err, :generator].include?(min_status)
       return
     end
     if min_status == :generator
       # On a document parse accepts, only an overflow-to-Infinity
-      # float (1e999, a 300-digit integer with a small exponent, maybe
-      # hidden behind a duplicate key parse would discard) or a
-      # lone-surrogate object key may abort the pipe. Rerunning with
-      # allow_nan separates them: it lifts the float refusal but not
-      # the key refusal, and the key requires a \u escape.
-      begin
-        NOSJ.reformat_native(s, {allow_nan: true})
-      rescue NOSJ::GeneratorError
-        raise "GeneratorError without a \\u escape in source" unless s.include?("\\u")
-      end
+      # float (1e999, a 300-digit integer with a small exponent) may
+      # abort the pipe, and allow_nan lifts exactly that refusal.
+      stage("reformat with allow_nan") { NOSJ.reformat_native(s, {allow_nan: true}) }
       return
     end
     raise "reformat refused what parse accepted" unless min_status == :ok
@@ -140,11 +140,9 @@ module NOSJFuzz
     raise "yielded values diverge from per-line parses" unless yielded.eql?(reference)
 
     if status == :ok && !yielded.empty?
-      begin
-        ndjson = NOSJ.generate_lines_native(yielded, nil)
-      rescue NOSJ::GeneratorError
-        return # WTF-8 strings (lone surrogates) are not generable
-      end
+      # Parsed values are always generable: parse refuses lone
+      # surrogates, the only source of unencodable strings.
+      ndjson = stage("generate_lines") { NOSJ.generate_lines_native(yielded, nil) }
       back = []
       NOSJ.each_line_native(ndjson, nil) { |v| back << v }
       raise "generate_lines does not round-trip" unless back.eql?(yielded)
@@ -168,16 +166,11 @@ module NOSJFuzz
     doc = utf8(doc_bytes)
     spec_status, spec = try_parse(utf8(spec_bytes))
     return unless spec_status == :ok
-    # Replacement values with broken encoding (lone surrogates) raise
-    # GeneratorError on insertion; the reference cannot mirror that.
-    return unless deep_valid_encoding?(spec)
 
+    # Parsing refuses duplicate keys (raw-byte resolution would see the
+    # first occurrence, the tree the last) and lone surrogates, so an
+    # accepted tree and spec are free of both.
     tree_status, tree = try_parse(doc)
-    # Duplicate keys: raw-byte resolution sees the first occurrence,
-    # tree materialization keeps the last; the two sides cannot agree.
-    if tree_status == :ok && NOSJ.stats_native(doc, nil)[:keys] != count_keys(tree)
-      return
-    end
 
     case spec
     when Hash
@@ -378,23 +371,6 @@ module NOSJFuzz
     when Hash then v.transform_values { |e| deep_dup(e) }
     when Array then v.map { |e| deep_dup(e) }
     else v
-    end
-  end
-
-  def deep_valid_encoding?(v)
-    case v
-    when String then v.valid_encoding?
-    when Array then v.all? { |e| deep_valid_encoding?(e) }
-    when Hash then v.all? { |k, e| deep_valid_encoding?(k) && deep_valid_encoding?(e) }
-    else true
-    end
-  end
-
-  def count_keys(v)
-    case v
-    when Hash then v.size + v.sum { |_, e| count_keys(e) }
-    when Array then v.sum { |e| count_keys(e) }
-    else 0
     end
   end
 end

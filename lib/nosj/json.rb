@@ -12,12 +12,18 @@
 # Entry points built on JSON.parse (JSON.load, JSON.parse!,
 # JSON.load_file, JSON.unsafe_load) pick up the fast path automatically
 # and keep their exact legacy behavior when they need unsupported options
-# (JSON.load's create_additions default always takes the fallback).
+# (json 2's JSON.load passes create_additions, so it always takes the
+# fallback).
 #
-# Exceptions from the fast path are re-raised as the JSON classes
-# (JSON::ParserError, JSON::GeneratorError, JSON::NestingError), so
-# existing rescue clauses keep working. Parse error MESSAGES are
-# NOSJ's (byte offsets rather than the gem's phrasing).
+# The drop-in follows whichever json is installed, 2.x or 3.x: its
+# calling conventions (json 3's keyword-only parse, its dump defaults)
+# and its semantics. NOSJ implements json 3's (duplicate keys and lone
+# surrogates are errors), so whenever the fast path refuses a call, the
+# original gem runs it again and has the last word: json 2 accepts what
+# it always accepted, and every exception is the gem's own, message,
+# json_path and invalid_object included. That second pass happens on
+# failures only; a generate run twice this way calls to_json on the
+# objects visited before the refusal twice.
 #
 # Not rerouted: obj.to_json (core extensions drive the gem's generator
 # directly), and objects with a custom to_json inside a rerouted
@@ -30,15 +36,26 @@ module NOSJ
   # Implementation detail of `require "nosj/json"`.
   # @private
   module JSONDropIn
-    # quirks_mode rides the fast path because NOSJ.parse is always
-    # quirks-mode (top-level scalars parse) and ignores the key; Rails
-    # 7.x passes it from ActiveSupport::JSON.decode.
+    # json 3 made parse's options keyword-only, fixed dump's defaults and
+    # raises for options json 2 ignored or aliased.
+    JSON3 = ::JSON::VERSION.to_i >= 3
+
     PARSE_OPTS = %i[symbolize_names freeze max_nesting allow_nan
-      allow_trailing_comma quirks_mode].freeze
+      allow_trailing_comma allow_duplicate_key].freeze
+    # json 2 ignores quirks_mode, which Rails 7.x passes from
+    # ActiveSupport::JSON.decode, so its fast path takes the key and
+    # drops it (NOSJ.parse always parses top-level scalars, and refuses
+    # unknown keys). json 3 raises for it, so there it reaches the gem
+    # like any other unknown option.
+    QUIRKS_MODE = :quirks_mode
+    JSON2_PARSE_OPTS = (PARSE_OPTS + [QUIRKS_MODE]).freeze
     GENERATE_OPTS = %i[indent space space_before object_nl array_nl
-      max_nesting allow_nan ascii_only script_safe
-      escape_slash strict depth
-      buffer_initial_length].freeze
+      max_nesting allow_nan ascii_only script_safe strict depth
+      buffer_initial_length allow_duplicate_key].freeze
+    JSON3_DUMP_DEFAULTS = {allow_nan: true}.freeze
+    # json 2.10 and older accept only strict: in dump's options hash,
+    # through this private helper; later versions merge any option.
+    DUMP_MERGES_OPTIONS = !::JSON.respond_to?(:merge_dump_options, true)
 
     module_function
 
@@ -52,6 +69,13 @@ module NOSJ
       true
     end
 
+    # Generate options the fast path handles: supported keys, minus the
+    # one combination NOSJ refuses (ascii_only with script_safe, which
+    # json supports).
+    def generate_supported?(opts)
+      supported?(opts, GENERATE_OPTS) && !(opts && opts[:ascii_only] && opts[:script_safe])
+    end
+
     def parse(source, opts)
       # NOSJ.parse is deliberately strict about encodings (json-3.0
       # semantics), but the drop-in must match the installed gem, which
@@ -61,30 +85,60 @@ module NOSJ
       # (copy-on-write bytes), and the validity scan is memoized
       # coderange the parse would compute anyway. Anything else
       # non-UTF-8 (UTF-16, ...) belongs to gem json, which transcodes.
+      input = source
       if source.is_a?(String)
         case source.encoding
         when Encoding::UTF_8, Encoding::US_ASCII
         # the fast path as-is
         when Encoding::BINARY
           utf8 = source.dup.force_encoding(Encoding::UTF_8)
-          source = utf8 if utf8.valid_encoding?
+          input = utf8 if utf8.valid_encoding?
         else
-          return ::JSON.nosj_original_parse(source, **(opts || {}))
+          return original_parse(source, opts)
         end
       end
-      NOSJ.parse(source, opts)
-    rescue NOSJ::NestingError => e
-      raise ::JSON::NestingError, e.message
-    rescue NOSJ::ParserError => e
-      raise ::JSON::ParserError, e.message
+      NOSJ.parse(input, opts)
+    rescue NOSJ::ParserError, NOSJ::NestingError
+      original_parse(source, opts)
+    end
+
+    # json 2's options without quirks_mode (see QUIRKS_MODE), allocating
+    # nothing for Rails' lone `quirks_mode: true`.
+    def without_quirks_mode(opts)
+      return opts unless opts&.key?(QUIRKS_MODE)
+      if opts.size == 1
+        nil
+      else
+        opts.except(QUIRKS_MODE)
+      end
+    end
+
+    # The installed gem's parse. json 3 takes keywords only; json 2's
+    # positional options hash receives them just the same.
+    def original_parse(source, opts)
+      ::JSON.nosj_original_parse(source, **(opts || {}))
     end
 
     def generate(obj, opts, pretty)
       pretty ? NOSJ.pretty_generate(obj, opts) : NOSJ.generate(obj, opts)
-    rescue NOSJ::NestingError => e
-      raise ::JSON::NestingError, e.message
-    rescue NOSJ::GeneratorError => e
-      raise ::JSON::GeneratorError, e.message
+    rescue NOSJ::GeneratorError, NOSJ::NestingError
+      if pretty
+        ::JSON.nosj_original_pretty_generate(obj, opts)
+      else
+        ::JSON.nosj_original_generate(obj, opts)
+      end
+    end
+
+    # The options JSON.dump generates with before the caller's own: fixed
+    # in json 3; json 2 reads its user-settable dump_default_options,
+    # through the internal reader 2.11 added when it deprecated the
+    # public one. Which one is decided here, once.
+    if JSON3
+      def dump_defaults = JSON3_DUMP_DEFAULTS
+    elsif ::JSON.respond_to?(:_dump_default_options)
+      def dump_defaults = ::JSON._dump_default_options
+    else
+      def dump_defaults = ::JSON.dump_default_options
     end
   end
 end
@@ -101,16 +155,26 @@ module JSON
       alias_method :nosj_original_pretty_generate, :pretty_generate
       alias_method :nosj_original_dump, :dump
 
-      def parse(source, opts = nil)
-        if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::PARSE_OPTS)
-          NOSJ::JSONDropIn.parse(source, opts)
-        else
-          nosj_original_parse(source, opts)
+      if NOSJ::JSONDropIn::JSON3
+        def parse(source, **opts)
+          if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::PARSE_OPTS)
+            NOSJ::JSONDropIn.parse(source, opts)
+          else
+            nosj_original_parse(source, **opts)
+          end
+        end
+      else
+        def parse(source, opts = nil)
+          if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::JSON2_PARSE_OPTS)
+            NOSJ::JSONDropIn.parse(source, NOSJ::JSONDropIn.without_quirks_mode(opts))
+          else
+            nosj_original_parse(source, opts)
+          end
         end
       end
 
       def generate(obj, opts = nil)
-        if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+        if NOSJ::JSONDropIn.generate_supported?(opts)
           NOSJ::JSONDropIn.generate(obj, opts, false)
         else
           nosj_original_generate(obj, opts)
@@ -118,7 +182,7 @@ module JSON
       end
 
       def pretty_generate(obj, opts = nil)
-        if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+        if NOSJ::JSONDropIn.generate_supported?(opts)
           NOSJ::JSONDropIn.generate(obj, opts, true)
         else
           nosj_original_pretty_generate(obj, opts)
@@ -127,17 +191,19 @@ module JSON
 
       def dump(obj, an_io = nil, limit = nil, kwargs = nil)
         # Fast path for the common shapes, dump(obj) and dump(obj, opts
-        # hash), mirroring gem json: dump defaults merged under the
-        # user's options, NestingError surfaced as ArgumentError. IO and
-        # limit arguments take gem json's own dump.
-        if limit.nil? && kwargs.nil? && (an_io.nil? || an_io.instance_of?(Hash))
-          opts = _dump_default_options
+        # hash): the installed gem's dump defaults merged under the
+        # caller's options. IO and limit arguments, and anything the
+        # fast path refuses, take gem json's own dump, which also turns
+        # json 2's NestingError into its ArgumentError.
+        if limit.nil? && kwargs.nil? &&
+            (an_io.nil? || NOSJ::JSONDropIn::DUMP_MERGES_OPTIONS && an_io.instance_of?(Hash))
+          opts = NOSJ::JSONDropIn.dump_defaults
           opts = opts.merge(an_io) if an_io
-          if NOSJ::JSONDropIn.supported?(opts, NOSJ::JSONDropIn::GENERATE_OPTS)
+          if NOSJ::JSONDropIn.generate_supported?(opts)
             begin
-              return NOSJ::JSONDropIn.generate(obj, opts, false)
-            rescue ::JSON::NestingError
-              raise ArgumentError, "exceed depth limit"
+              return NOSJ.generate(obj, opts)
+            rescue NOSJ::GeneratorError, NOSJ::NestingError
+              # the gem's own dump below runs it again and decides
             end
           end
         end

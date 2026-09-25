@@ -86,10 +86,13 @@ module NOSJ
   # Parses a JSON document, JSON.parse-compatible: same values, same
   # option names, same behavior, byte-for-byte.
   #
-  # The +json+ gem's legacy object-deserialization options
-  # (+object_class+, +array_class+, +decimal_class+,
-  # +create_additions+) are deliberately unsupported and raise
-  # ArgumentError.
+  # Options follow json 3: an unknown key raises ArgumentError
+  # (<code>unknown keyword: foo</code>). The json options nosj does not
+  # implement (+object_class+, +array_class+, +decimal_class+,
+  # +on_load+, +create_additions+, +allow_comments+,
+  # +allow_control_characters+, +allow_invalid_escape+) raise
+  # ArgumentError unless falsy, since their falsy default is nosj's
+  # behavior.
   #
   # @example
   #   NOSJ.parse('{"a":[1,true]}')                      #=> {"a" => [1, true]}
@@ -98,12 +101,14 @@ module NOSJ
   # @param source [String] the JSON document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] +symbolize_names+, +freeze+, +max_nesting+
   #   (Integer or +false+ for unlimited), +allow_nan+,
-  #   +allow_trailing_comma+
+  #   +allow_trailing_comma+, +allow_duplicate_key+ (json 3 semantics:
+  #   a repeated key raises unless this is true, then the last one wins)
   # @return [Object] the parsed value tree
-  # @raise [ParserError] when the document is malformed or not UTF-8;
-  #   carries the failure position ({ParserError#line} and friends)
+  # @raise [ParserError] when the document is malformed, repeats a key,
+  #   holds a lone surrogate (+"\udc00"+), or is not UTF-8; carries the
+  #   failure position ({ParserError#line} and friends)
   # @raise [NestingError] when nesting exceeds +max_nesting+
-  # @raise [ArgumentError] for unsupported options
+  # @raise [ArgumentError] for unknown or unsupported options
   def self.parse(source, opts = nil)
     parse_native(source, opts)
   end
@@ -119,12 +124,18 @@ module NOSJ
   #   @param obj [Object] the value tree to serialize
   #   @param opts [Hash, nil] +indent+, +space+, +space_before+,
   #     +object_nl+, +array_nl+, +max_nesting+ (Integer or +false+),
-  #     +allow_nan+, +ascii_only+, +script_safe+ (alias +escape_slash+),
-  #     +strict+, +depth+, +buffer_initial_length+
+  #     +allow_nan+, +ascii_only+, +script_safe+, +strict+, +depth+,
+  #     +buffer_initial_length+, +allow_duplicate_key+ (json 3
+  #     semantics: keys that render alike, like <code>"a"</code> and
+  #     <code>:a</code>, raise unless true). As in json 3, an unknown
+  #     key raises (+escape_slash+ is gone: use +script_safe+), and the
+  #     unimplemented +sort_keys+ and +as_json+ raise unless falsy.
   #   @return [String] the JSON document
   #   @raise [GeneratorError] for non-finite floats without +allow_nan+,
-  #     unsupported objects under +strict+, or broken string encodings
+  #     unsupported objects under +strict+, keys that render alike, or
+  #     broken string encodings
   #   @raise [NestingError] when nesting exceeds +max_nesting+
+  #   @raise [ArgumentError] for unknown or unsupported options
 
   # Generates human-readable JSON, JSON.pretty_generate-compatible
   # (two-space indent, newlines between elements). Options override the
@@ -156,7 +167,7 @@ module NOSJ
   # @param source [String] the JSON document
   # @param opts [Hash, nil] same options as {.parse}
   # @return [Boolean]
-  # @raise [ArgumentError] for unsupported options
+  # @raise [ArgumentError] for unknown or unsupported options
   def self.valid?(source, opts = nil)
     valid_native(source, opts)
   end
@@ -323,18 +334,19 @@ module NOSJ
   # Minifies a document without building any Ruby values: the parser's
   # events pipe straight into the emission kernels, SIMD in and SIMD
   # out. Output is exactly what <code>generate(parse(json))</code>
-  # would produce, except duplicate object keys pass through instead of
-  # being collapsed (a reformatter must not silently drop data).
-  # Numbers come out in the canonical spelling (+1.50+ becomes +1.5+)
-  # and string escapes are normalized.
+  # would produce, and it accepts exactly what {.parse} accepts; under
+  # +allow_duplicate_key+, repeated keys pass through instead of being
+  # collapsed (a reformatter must not silently drop data). Numbers come
+  # out in the canonical spelling (+1.50+ becomes +1.5+) and string
+  # escapes are normalized.
   #
   # @example
   #   NOSJ.minify(%({ "a": [1, 2],\n  "b": "x" }))  #=> '{"a":[1,2],"b":"x"}'
   #
   # @param json [String] the document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] acceptance options (+allow_nan+,
-  #   +allow_trailing_comma+, +max_nesting+); trailing commas are
-  #   normalized away when accepted
+  #   +allow_trailing_comma+, +allow_duplicate_key+, +max_nesting+);
+  #   trailing commas are normalized away when accepted
   # @return [String] the minified document
   # @raise [ParserError] when the document is malformed
   # @raise [NestingError] past +max_nesting+
@@ -358,8 +370,7 @@ module NOSJ
   # @return [String] the reformatted document
   # @raise [ParserError] when the document is malformed
   # @raise [NestingError] past +max_nesting+
-  # @raise [GeneratorError] when +ascii_only+ meets a lone-surrogate
-  #   string it cannot represent
+  # @raise [GeneratorError] for a non-finite float without +allow_nan+
   def self.reformat(json, opts = nil)
     if opts&.key?(:pretty)
       pretty = opts[:pretty]
@@ -598,7 +609,9 @@ module NOSJ
   #
   # @param source [String] the JSON document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] +max_nesting+, +allow_nan+,
-  #   +allow_trailing_comma+ (acceptance options only)
+  #   +allow_trailing_comma+ (acceptance options only). Being a
+  #   diagnostic, stats also describes documents {.parse} would refuse
+  #   for a repeated key or a lone surrogate.
   # @return [Hash] the statistics described above
   # @raise [ParserError] when the document is malformed or not UTF-8
   def self.stats(source, opts = nil)

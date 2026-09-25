@@ -18,6 +18,11 @@ pub(super) fn protected_to_s(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_obj_as_string(v) })
 }
 
+/// `v.inspect`, protected (user code for any element's `inspect`).
+pub(super) fn protected_inspect(v: VALUE) -> Result<VALUE, Error> {
+    magnus::rb_sys::protect(|| unsafe { rb_sys::rb_inspect(v) })
+}
+
 /// `v.to_json`, protected.
 pub(super) fn protected_to_json(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, to_json_id(), 0) })

@@ -122,6 +122,10 @@ RSpec.describe "NOSJ.stats" do
     expect(NOSJ.stats("[NaN]", allow_nan: true)[:values][:floats]).to eq(1)
     expect(NOSJ.stats("[1,]", allow_trailing_comma: true)[:values][:integers]).to eq(1)
     expect { NOSJ.stats("[1]", object_class: Hash) }.to raise_error(ArgumentError)
+    # Only those: parse's value-building options would be ignored.
+    %i[symbolize_names freeze allow_duplicate_key].each do |opt|
+      expect { NOSJ.stats("[1]", opt => true) }.to raise_error(ArgumentError, "unknown keyword: #{opt}")
+    end
   end
 
   it "raises rich ParserErrors like parse" do

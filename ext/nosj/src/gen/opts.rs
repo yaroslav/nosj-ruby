@@ -5,6 +5,9 @@ use magnus::value::ReprValue;
 use magnus::{Error, RHash, RString, Ruby, Value};
 use nosj::emit::EscapeMode;
 
+use crate::opt_reader::{Opt, OptReader};
+use crate::sink::MAX_NESTING;
+
 pub(crate) struct GenConfig {
     pub(crate) indent: Vec<u8>,
     pub(crate) space: Vec<u8>,
@@ -21,195 +24,129 @@ pub(crate) struct GenConfig {
     /// null (Float#as_json parity). Set only by the Rails entry, never
     /// from user option hashes.
     pub(super) rails: bool,
+    /// json 3: keys that render the same (`"a"` and `:a`) raise unless
+    /// this is set. The Rails configs keep ActiveSupport's own handling.
+    pub(super) allow_duplicate_key: bool,
     pub(crate) mode: EscapeMode,
     /// Precomputed "any formatting string set": scanning the five
     /// vectors per call was measurable on tiny documents.
     pub(super) pretty: bool,
 }
 
+/// The json gem's defaults under an escape mode, for the plain walk or
+/// the Rails encoder's (which keeps ActiveSupport's own key handling,
+/// so it allows keys that render alike). A const fn because statics
+/// cannot struct-update a type with `Vec` fields; `Vec::new` is const
+/// and allocation-free.
+const fn defaults(rails: bool, mode: EscapeMode) -> GenConfig {
+    GenConfig {
+        indent: Vec::new(),
+        space: Vec::new(),
+        space_before: Vec::new(),
+        object_nl: Vec::new(),
+        array_nl: Vec::new(),
+        max_nesting: MAX_NESTING,
+        start_depth: 0,
+        allow_nan: false,
+        strict: false,
+        rails,
+        allow_duplicate_key: rails,
+        mode,
+        pretty: false,
+    }
+}
+
 /// The nil-options configuration, shared instead of rebuilt: stamping
 /// a fresh ~140-byte GenConfig onto the stack per call was measurable
 /// on tiny documents (the json gem likewise reuses a cached State for
-/// the default options). Safe as a static: `Vec::new` is const and
-/// allocation-free, and generation only ever borrows the config.
-pub(crate) static DEFAULT_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: false,
-    mode: EscapeMode::Standard,
-    pretty: false,
-};
+/// the default options). Safe as a static: generation only ever
+/// borrows the config.
+pub(crate) static DEFAULT_CONFIG: GenConfig = defaults(false, EscapeMode::Standard);
 
 /// The Rails-encoder configuration for ActiveSupport's default escape
 /// flags (HTML entities and JS separators both on, the overwhelmingly
 /// common case): escaping is fused into the crate's HtmlSafe kernels,
 /// one pass, no post-scan.
-pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    mode: EscapeMode::HtmlSafe,
-    pretty: false,
-};
+pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = defaults(true, EscapeMode::HtmlSafe);
 
 /// Rails-encoder configuration with HTML entities on and JS separators
 /// off.
-pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    mode: EscapeMode::HtmlEntities,
-    pretty: false,
-};
+pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = defaults(true, EscapeMode::HtmlEntities);
 
 /// Rails-encoder configuration with JS separators on and HTML entities
 /// off.
-pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    mode: EscapeMode::JsSeparators,
-    pretty: false,
-};
+pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = defaults(true, EscapeMode::JsSeparators);
 
 /// The Rails-encoder configuration with every escape flag off
 /// (encode(escape: false)). Mirrors JSONGemEncoder#stringify, which
 /// generates with the json gem's defaults.
-pub(super) static RAILS_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    mode: EscapeMode::Standard,
-    pretty: false,
-};
+pub(super) static RAILS_CONFIG: GenConfig = defaults(true, EscapeMode::Standard);
 
 impl Default for GenConfig {
     fn default() -> Self {
-        GenConfig {
-            indent: Vec::new(),
-            space: Vec::new(),
-            space_before: Vec::new(),
-            object_nl: Vec::new(),
-            array_nl: Vec::new(),
-            max_nesting: 100,
-            start_depth: 0,
-            allow_nan: false,
-            strict: false,
-            rails: false,
-            mode: EscapeMode::Standard,
-            pretty: false,
-        }
+        defaults(false, EscapeMode::Standard)
     }
 }
 
-fn opt_bytes(ruby: &Ruby, opts: RHash, name: &str) -> Result<Option<Vec<u8>>, Error> {
-    let v: Value = opts
-        .get(ruby.to_symbol(name))
-        .unwrap_or_else(|| ruby.qnil().as_value());
-    if v.is_nil() {
-        return Ok(None);
-    }
+/// A formatting string option's bytes; empty when absent or nil.
+fn opt_bytes(r: &mut OptReader, opt: Opt) -> Result<Vec<u8>, Error> {
+    let Some(v) = r.get(opt).filter(|v| !v.is_nil()) else {
+        return Ok(Vec::new());
+    };
     let s = RString::from_value(v).ok_or_else(|| {
         Error::new(
-            ruby.exception_type_error(),
-            format!("{name} must be a String"),
+            r.ruby().exception_type_error(),
+            format!("{} must be a String", opt.name()),
         )
     })?;
-    Ok(Some(unsafe { s.as_slice() }.to_vec()))
+    Ok(unsafe { s.as_slice() }.to_vec())
 }
 
-fn opt_bool(ruby: &Ruby, opts: RHash, name: &str) -> Option<bool> {
-    let v: Value = opts.get(ruby.to_symbol(name))?;
-    if v.is_nil() {
-        None
-    } else {
-        Some(v.to_bool())
-    }
-}
-
-/// Decode a non-nil options hash (nil takes [`DEFAULT_CONFIG`] at the
-/// call site without constructing anything).
+/// Decode a generate options hash (nil takes [`DEFAULT_CONFIG`] at the
+/// call site without constructing anything); keys it does not read
+/// raise ArgumentError, like json 3.
 pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usize), Error> {
-    let mut cfg = GenConfig::default();
-    let mut cap_hint = 0usize;
     if opts.is_nil() {
-        return Ok((cfg, cap_hint));
+        return Ok((GenConfig::default(), 0));
     }
     let opts = RHash::from_value(opts)
         .ok_or_else(|| Error::new(ruby.exception_type_error(), "options must be a Hash or nil"))?;
+    let mut reader = OptReader::new(ruby, opts);
+    let decoded = read_gen_opts(&mut reader)?;
+    reader.finish()?;
+    Ok(decoded)
+}
 
-    if let Some(v) = opt_bytes(ruby, opts, "indent")? {
-        cfg.indent = v;
-    }
-    if let Some(v) = opt_bytes(ruby, opts, "space")? {
-        cfg.space = v;
-    }
-    if let Some(v) = opt_bytes(ruby, opts, "space_before")? {
-        cfg.space_before = v;
-    }
-    if let Some(v) = opt_bytes(ruby, opts, "object_nl")? {
-        cfg.object_nl = v;
-    }
-    if let Some(v) = opt_bytes(ruby, opts, "array_nl")? {
-        cfg.array_nl = v;
-    }
-    if let Some(v) = opt_bool(ruby, opts, "allow_nan") {
-        cfg.allow_nan = v;
-    }
-    if let Some(v) = opt_bool(ruby, opts, "strict") {
-        cfg.strict = v;
-    }
-    let ascii = opt_bool(ruby, opts, "ascii_only").unwrap_or(false);
-    let script = opt_bool(ruby, opts, "script_safe").unwrap_or(false)
-        || opt_bool(ruby, opts, "escape_slash").unwrap_or(false);
+/// Read the json 3 generate options and the buffer size hint. sort_keys
+/// and as_json, which NOSJ does not implement, raise unless falsy.
+pub(crate) fn read_gen_opts(r: &mut OptReader) -> Result<(GenConfig, usize), Error> {
+    let mut cfg = GenConfig {
+        indent: opt_bytes(r, Opt::Indent)?,
+        space: opt_bytes(r, Opt::Space)?,
+        space_before: opt_bytes(r, Opt::SpaceBefore)?,
+        object_nl: opt_bytes(r, Opt::ObjectNl)?,
+        array_nl: opt_bytes(r, Opt::ArrayNl)?,
+        allow_nan: r.truthy(Opt::AllowNan),
+        strict: r.truthy(Opt::Strict),
+        allow_duplicate_key: r.truthy(Opt::AllowDuplicateKey),
+        ..GenConfig::default()
+    };
+    let mut cap_hint = 0usize;
+    r.tolerate(&[Opt::SortKeys, Opt::AsJson]);
+    let ascii = r.truthy(Opt::AsciiOnly);
+    let script = r.truthy(Opt::ScriptSafe);
     if ascii {
         cfg.mode = EscapeMode::AsciiOnly;
         if script {
             return Err(Error::new(
-                ruby.exception_arg_error(),
+                r.ruby().exception_arg_error(),
                 "NOSJ.generate: ascii_only and script_safe cannot be combined",
             ));
         }
     } else if script {
         cfg.mode = EscapeMode::ScriptSafe;
     }
-    if let Some(v) = opts.get(ruby.to_symbol("max_nesting")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::MaxNesting) {
         // nil/false → unlimited; true → keep the default 100; Integer → limit.
         if !v.to_bool() {
             cfg.max_nesting = 0;
@@ -217,14 +154,12 @@ pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usi
             cfg.max_nesting = if n <= 0 { 0 } else { n as usize };
         }
     }
-    if let Some(v) = opts.get(ruby.to_symbol("depth")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::Depth) {
         if let Ok(n) = <i64 as magnus::TryConvert>::try_convert(v) {
             cfg.start_depth = if n <= 0 { 0 } else { n as usize };
         }
     }
-    if let Some(v) = opts.get(ruby.to_symbol("buffer_initial_length")) {
-        let v: Value = v;
+    if let Some(v) = r.get(Opt::BufferInitialLength) {
         if let Ok(n) = <i64 as magnus::TryConvert>::try_convert(v) {
             if n > 0 {
                 cap_hint = n as usize;

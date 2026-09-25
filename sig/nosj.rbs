@@ -14,9 +14,10 @@ module NOSJ
   # Options arrive as a positional Hash (the JSON gem's own calling
   # convention; an explicit **kwargs would allocate per call), nil when
   # omitted. Parse: symbolize_names, freeze, max_nesting, allow_nan,
-  # allow_trailing_comma. Generate: indent, space, space_before,
-  # object_nl, array_nl, max_nesting, allow_nan, ascii_only,
-  # script_safe/escape_slash, strict, depth, buffer_initial_length.
+  # allow_trailing_comma, allow_duplicate_key. Generate: indent, space,
+  # space_before, object_nl, array_nl, max_nesting, allow_nan,
+  # ascii_only, script_safe, strict, depth, buffer_initial_length,
+  # allow_duplicate_key. Unknown keys raise ArgumentError (json 3).
   type opts = Hash[Symbol, untyped]?
 
   # One NOSJ.dig path element (negative Integer indices resolve to nil).

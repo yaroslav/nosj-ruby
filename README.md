@@ -65,6 +65,10 @@ through nosj:
 require "nosj/json"
 ```
 
+It works with json 2.x and 3.0 alike and follows whichever your app
+has installed: its calling conventions, its defaults, and the documents
+it accepts.
+
 In a Bundler app (Rails included) that can live entirely in the
 Gemfile you can do this:
 
@@ -108,9 +112,11 @@ The `json` gem API, on the `NOSJ` module:
 
 ```ruby
 NOSJ.parse(src, symbolize_names: true)   # also: freeze, max_nesting,
-                                         # allow_nan, allow_trailing_comma
+                                         # allow_nan, allow_trailing_comma,
+                                         # allow_duplicate_key
 NOSJ.generate(obj)                       # indent, space, object_nl, ...,
-NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict
+NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict,
+                                         # allow_duplicate_key
 ```
 
 ### Lazy documents
@@ -189,10 +195,11 @@ NOSJ.reformat_file("big.json")           # straight off a memory map
 ```
 
 Output is exactly `generate(parse(json))`—canonical number spellings,
-normalized escapes, same formatting options—except duplicate keys pass
-through (a reformatter must not silently drop data) and lone-surrogate
-strings re-escape instead of raising. Acceptance options apply too:
-`minify(src, allow_trailing_comma: true)` normalizes the commas away.
+normalized escapes, same formatting options—and it accepts exactly what
+`parse` does. Acceptance options apply too:
+`minify(src, allow_trailing_comma: true)` normalizes the commas away,
+and under `allow_duplicate_key: true` repeated keys pass through (a
+reformatter must not silently drop data).
 
 ### Byte-splicing edits and JSON Patch
 
@@ -403,19 +410,28 @@ Reproduce with `rake bench` (the parity-gated comparison, after a PGO retrain—
 
 ## Switching from the json gem
 
-You mostly don't have to do anything. Some differences:
+You mostly don't have to do anything. `NOSJ.*` follows json 3.0,
+whichever json your app runs; the `nosj/json` drop-in follows the
+installed one, 2.x or 3.0. Some differences:
 
-- The legacy object-deserialization options (`create_additions`,
-  `object_class`, `array_class`, `decimal_class`) raise ArgumentError;
-  the `nosj/json` drop-in falls back to the original gem for them.
-- Behaviors the `json` gem itself deprecates (JS comments, raw invalid
-  UTF-8) follow the strict semantics instead.
+- json 3.0 semantics: duplicate keys, lone surrogates, JS comments,
+  and invalid UTF-8 are errors (`allow_duplicate_key: true` restores
+  last-key-wins), keys that render alike raise in `generate`, and
+  unknown options raise ArgumentError. With json 2.x installed, the
+  drop-in keeps json 2's leniency: when nosj refuses a call, the
+  installed gem runs it and has the last word.
+- The json options nosj doesn't implement (`create_additions`,
+  `object_class`, `array_class`, `decimal_class`, `on_load`,
+  `allow_comments`, `allow_control_characters`,
+  `allow_invalid_escape`, `sort_keys`, `as_json`) raise ArgumentError
+  unless falsy; the drop-in passes them to the original gem.
 - Unlike `Array#dig`, negative indices in `NOSJ.dig` return nil (JSON
   Pointer has no equivalent).
 - Parse errors raise `NOSJ::ParserError` (`NOSJ::NestingError` past
   `max_nesting`, like the gem); messages use byte offsets rather than
   the gem's phrasing, and the exception carries `#line`, `#column`,
-  and a caret `#snippet`.
+  and a caret `#snippet`. Through the drop-in, exceptions are the
+  installed gem's own (message, `json_path`, `invalid_object`).
 
 Everything else—including the gem's exact float formatting, which is
 not the shortest-round-trip form most libraries emit—matches

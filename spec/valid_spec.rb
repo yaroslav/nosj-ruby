@@ -38,6 +38,38 @@ RSpec.describe "NOSJ.valid?" do
     expect(NOSJ.valid?("[NaN]", allow_nan: true)).to be(true)
   end
 
+  it "agrees with parse on duplicate keys and lone surrogates (json 3 semantics)" do
+    # Objects small (pairwise compare), mid-sized (seen-table), and large
+    # (sort) take different close-time checks.
+    [3, 40, 300].each do |size|
+      unique = keyed_object(size)
+      repeated = keyed_object(size, repeat: "k#{size / 2}")
+      expect(NOSJ.valid?(unique)).to be(true), "#{size} unique"
+      expect(NOSJ.valid?(repeated)).to be(false), "#{size} repeated"
+      expect(NOSJ.valid?(repeated, allow_duplicate_key: true)).to be(true)
+      expect { NOSJ.parse(repeated) }.to raise_error(NOSJ::ParserError)
+    end
+    # A repeat only across sibling objects is fine.
+    expect(NOSJ.valid?('[{"a":1},{"a":2}]')).to be(true)
+    expect(NOSJ.valid?('{"a":{"a":1}}')).to be(true)
+    expect(NOSJ.valid?('["\udc00"]')).to be(false)
+  end
+
+  it "refuses and positions repeats and lone surrogates however deep they nest" do
+    depth = 5000
+    repeated = "[" * depth + '{"a":1,"a":2}' + "]" * depth
+    expect(NOSJ.valid?(repeated, max_nesting: false)).to be(false)
+    [-> { NOSJ.parse(repeated, max_nesting: false) }, -> { NOSJ.minify(repeated, max_nesting: false) }].each do |call|
+      expect(&call).to raise_error(NOSJ::ParserError, %(duplicate key "a" at byte #{depth})) { |e|
+        expect(e.byte_offset).to eq(depth)
+      }
+    end
+    lone = "[" * depth + '"\udc00"' + "]" * depth
+    expect(NOSJ.valid?(lone, max_nesting: false)).to be(false)
+    expect { NOSJ.parse(lone, max_nesting: false) }
+      .to raise_error(NOSJ::ParserError, "lone UTF-16 surrogate at byte #{depth}")
+  end
+
   it "honors max_nesting like parse" do
     deep = "[" * 101 + "]" * 101
     expect(NOSJ.valid?(deep)).to be(false)

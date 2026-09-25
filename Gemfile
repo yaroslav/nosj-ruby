@@ -27,8 +27,14 @@ group :test do
   gem "actionpack", *[rails_pin].compact
 end
 
+# Pinnable for CI's json-compat matrix (e.g. "~> 3.0"): the drop-in
+# follows whichever json is installed. A pinned run leaves out standard,
+# whose rubocop requires json 2.x.
+json_pin = ENV.fetch("NOSJ_JSON_VERSION", nil)
+gem "json", json_pin if json_pin
+
 group :development do
-  gem "standard", "~> 1.3"
+  gem "standard", "~> 1.3" unless json_pin
   gem "rbs", "~> 4.0"
   gem "yard", "~> 0.9"
   gem "lefthook", "~> 2.1"

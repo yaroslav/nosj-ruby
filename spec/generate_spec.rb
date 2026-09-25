@@ -101,4 +101,53 @@ RSpec.describe "NOSJ.generate" do
       .to eq(JSON.generate(value, strict: true))
     expect(NOSJ.generate(value)).to eq('{"cached":{"pre":"rendered"}}')
   end
+
+  it "raises json 3's ArgumentError for unknown options, and for unsupported ones unless falsy" do
+    expect { NOSJ.generate([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.pretty_generate([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.generate(["/"], escape_slash: true) }
+      .to raise_error(ArgumentError, "unknown keyword: escape_slash")
+    expect { NOSJ.generate([1], symbolize_names: true) }
+      .to raise_error(ArgumentError, "unknown keyword: symbolize_names")
+    expect { NOSJ.generate_lines([1], bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    expect { NOSJ.splice("[1]", {"/0" => 2}, bogus: 1) }.to raise_error(ArgumentError, "unknown keyword: bogus")
+    %i[sort_keys as_json].each do |opt|
+      expect { NOSJ.generate([1], opt => true) }
+        .to raise_error(ArgumentError, "NOSJ does not support the #{opt} option")
+      expect(NOSJ.generate([1], opt => false)).to eq("[1]")
+    end
+  end
+
+  describe "keys that render alike (json 3 semantics)" do
+    # json 3's rule: only a String or Symbol key in a hash whose first key
+    # had another kind triggers the check (keys of one kind cannot
+    # collide), which then compares every key's to_s.
+    it "raises the gem's GeneratorError for mixed-kind collisions" do
+      inner = {"c" => 1, :c => 2}
+      [
+        [{"a" => 1, :a => 2}, "a"],
+        [{:b => 1, :a => 2, "a" => 3}, "a"],
+        [{1 => 1, "1" => 2}, "1"],
+        [{nil => 1, "" => 2}, ""],
+        [{"x" => inner}, "c", inner]
+      ].each do |hash, key, offender = hash|
+        # json 3 builds the message from #inspect, whose Hash format
+        # changed in Ruby 3.4 ({"a" => 1, a: 2} vs {"a"=>1, :a=>2}).
+        message = "detected duplicate key #{key.inspect} in #{offender.inspect}"
+        expect { NOSJ.generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
+        expect { NOSJ.pretty_generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
+      end
+    end
+
+    it "emits them under allow_duplicate_key: true, and never checks one-kind hashes" do
+      expect(NOSJ.generate({"a" => 1, :a => 2}, allow_duplicate_key: true)).to eq('{"a":1,"a":2}')
+      expect(NOSJ.generate({"a" => 1, :b => 2})).to eq('{"a":1,"b":2}')
+      same = Struct.new(:n) { def to_s = "same" }
+      expect(NOSJ.generate({same.new(1) => 1, same.new(2) => 2})).to eq('{"same":1,"same":2}')
+      identity = {}.compare_by_identity
+      identity[+"a"] = 1
+      identity[+"a"] = 2
+      expect(NOSJ.generate(identity)).to eq('{"a":1,"a":2}')
+    end
+  end
 end

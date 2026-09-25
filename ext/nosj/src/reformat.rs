@@ -5,27 +5,26 @@
 //! SIMD escape kernels on the way out there is nothing else.
 //!
 //! Output is exactly what `NOSJ.generate(NOSJ.parse(json), opts)`
-//! would produce, with two deliberate differences: duplicate object
-//! keys pass through (a reformatter must not silently drop data the
-//! way parse's last-key-wins materialization does), and lone-surrogate
-//! string values re-escape as `\uXXXX` instead of raising (the output
-//! must reparse; raw WTF-8 would not). Numbers come out in the gem's
-//! canonical spelling (`1.50` becomes `1.5`), and string escapes are
-//! normalized by the emission kernels.
+//! would produce, and the pipe accepts exactly what parse accepts:
+//! duplicate keys raise unless `allow_duplicate_key` (then they pass
+//! through: a reformatter must not silently drop data the way parse's
+//! last-key-wins materialization does), and lone surrogates raise.
+//! Numbers come out in the gem's canonical spelling (`1.50` becomes
+//! `1.5`), and string escapes are normalized by the emission kernels.
 
 use std::cell::Cell;
 
-use magnus::value::ReprValue;
 use magnus::{Error, RString, Ruby, Value};
-use nosj::emit::EscapeMode;
 use nosj::{FloatFormat, WriteOptions, Writer};
 
-use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
-use crate::gen::opts::{parse_gen_opts, GenConfig, DEFAULT_CONFIG};
-use crate::parse::{parse_native_opts, utf8_input, ParseNativeOpts};
+use crate::gen::opts::{read_gen_opts, GenConfig, DEFAULT_CONFIG};
+use crate::opt_reader::OptReader;
+use crate::parse::{
+    drive_error, drive_hashless, options_hash, read_parse_opts, utf8_input, ParseNativeOpts,
+};
 use crate::patch::finish_string;
-use crate::sink::SinkAbort;
+use crate::sink::{DupKeys, SinkAbort};
 use crate::state::{with_pull_state, with_taken};
 
 thread_local! {
@@ -41,61 +40,10 @@ struct PipeSink<'a> {
     w: Writer<'a>,
     depth: usize,
     max_nesting: usize,
-    /// For re-escaping WTF-8 string content (see [`quote_wtf8`]).
-    mode: EscapeMode,
     /// Non-finite floats pass through as literals only when the
     /// generate side allows them; see [`PipeSink::float`].
     allow_nan: bool,
-}
-
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-/// WTF-8 lone surrogates arrive as one 3-byte sequence with this lead
-/// byte (the only ill-formed runs the parser ever emits).
-const WTF8_SURROGATE_LEAD: u8 = 0xED;
-const WTF8_SURROGATE_LEN: usize = 3;
-/// Payload bits of a UTF-8 lead / continuation byte.
-const UTF8_LEAD3_BITS: u32 = 0x0F;
-const UTF8_CONT_BITS: u32 = 0x3F;
-
-/// Quote and escape WTF-8 content: valid UTF-8 runs go through the
-/// configured escape kernel, and lone-surrogate sequences re-escape as
-/// `\uXXXX`, so the output reparses to the identical string in every
-/// mode (raw WTF-8 bytes would not: the parser requires UTF-8 input).
-/// This deliberately diverges from `generate`, which refuses
-/// broken-coderange strings: a reformatter must accept everything the
-/// parser accepts.
-fn quote_wtf8(out: &mut Vec<u8>, bytes: &[u8], mode: EscapeMode) {
-    out.push(b'"');
-    let mut rest = bytes;
-    loop {
-        match std::str::from_utf8(rest) {
-            Ok(s) => {
-                nosj::emit::escape_into(out, s.as_bytes(), mode);
-                break;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                nosj::emit::escape_into(out, &rest[..valid], mode);
-                let sur = &rest[valid..];
-                debug_assert!(
-                    sur.len() >= WTF8_SURROGATE_LEN && sur[0] == WTF8_SURROGATE_LEAD,
-                    "parser only emits lone-surrogate WTF-8"
-                );
-                // Standard 3-byte UTF-8 decode of the surrogate
-                // codepoint (U+D800..U+DFFF), re-emitted as \uXXXX.
-                let cp = ((u32::from(sur[0]) & UTF8_LEAD3_BITS) << 12)
-                    | ((u32::from(sur[1]) & UTF8_CONT_BITS) << 6)
-                    | (u32::from(sur[2]) & UTF8_CONT_BITS);
-                out.extend_from_slice(b"\\u");
-                for shift in [12, 8, 4, 0] {
-                    out.push(HEX_DIGITS[((cp >> shift) & 0xF) as usize]);
-                }
-                rest = &sur[WTF8_SURROGATE_LEN..];
-            }
-        }
-    }
-    out.push(b'"');
+    dup_keys: DupKeys<'a>,
 }
 
 impl PipeSink<'_> {
@@ -165,25 +113,18 @@ impl nosj::Sink for PipeSink<'_> {
         Ok(())
     }
 
-    fn str_bytes(&mut self, value: &[u8]) -> Result<(), SinkAbort> {
-        // Rare path (lone-surrogate content); a per-call buffer is fine.
-        let mut quoted = Vec::with_capacity(value.len() + 8);
-        quote_wtf8(&mut quoted, value, self.mode);
-        self.w.value_raw(&quoted);
-        Ok(())
+    fn str_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
+        Err(SinkAbort::LoneSurrogate)
     }
 
     fn key(&mut self, key: &str) -> Result<(), SinkAbort> {
+        self.dup_keys.key(key.as_bytes());
         self.w.key(key);
         Ok(())
     }
 
-    fn key_bytes(&mut self, _key: &[u8]) -> Result<(), SinkAbort> {
-        // A lone-surrogate KEY has no pre-serialized escape hatch in
-        // the Writer (values have value_raw; a key_raw is on the crate
-        // wishlist), so this pathological case keeps generate's
-        // refusal semantics.
-        Err(SinkAbort::BrokenUtf8Output)
+    fn key_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
+        Err(SinkAbort::LoneSurrogate)
     }
 
     fn begin_array(&mut self) -> Result<(), SinkAbort> {
@@ -199,7 +140,7 @@ impl nosj::Sink for PipeSink<'_> {
     }
 
     fn mark(&self) -> usize {
-        0
+        self.dup_keys.mark()
     }
 
     fn end_array(&mut self, _: usize, _: usize) -> Result<(), SinkAbort> {
@@ -208,8 +149,9 @@ impl nosj::Sink for PipeSink<'_> {
         Ok(())
     }
 
-    fn end_object(&mut self, _: usize, _: usize) -> Result<(), SinkAbort> {
+    fn end_object(&mut self, mark: usize, _: usize) -> Result<(), SinkAbort> {
         self.depth -= 1;
+        self.dup_keys.close(mark)?;
         self.w.end_object();
         Ok(())
     }
@@ -238,14 +180,21 @@ struct ReformatOpts {
 }
 
 impl ReformatOpts {
+    /// One reader over both option sets, so a key either reads is known.
     fn decode(ruby: &Ruby, opts: Value) -> Result<Self, Error> {
+        let Some(h) = options_hash(ruby, opts)? else {
+            return Ok(Self {
+                parse: ParseNativeOpts::default(),
+                generate: None,
+            });
+        };
+        let mut reader = OptReader::new(ruby, h);
+        let parse = read_parse_opts(&mut reader)?;
+        let (generate, _) = read_gen_opts(&mut reader)?;
+        reader.finish()?;
         Ok(Self {
-            parse: parse_native_opts(ruby, opts)?,
-            generate: if opts.is_nil() {
-                None
-            } else {
-                Some(parse_gen_opts(ruby, opts)?.0)
-            },
+            parse,
+            generate: Some(generate),
         })
     }
 }
@@ -257,46 +206,26 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RStri
     let wopts = write_options(gcfg);
 
     with_taken(&PIPE_BUF, |buf| {
-        buf.clear();
-        // The output is at least input-sized for minify-shaped runs.
-        buf.reserve(input.len());
-        let mut sink = PipeSink {
-            w: Writer::new(buf, &wopts),
-            depth: 0,
-            max_nesting: po.max_nesting,
-            mode: gcfg.mode,
-            allow_nan: gcfg.allow_nan,
-        };
-        let result = with_pull_state(|state| {
-            // Safety: callers verified UTF-8 (coderange or full scan).
-            unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts) }
-        });
-        match result {
-            Ok(()) => finish_string(buf),
-            Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-                ruby,
-                format!(
-                    "nesting of {} is too deep",
-                    po.max_nesting.saturating_add(1)
-                ),
-            )),
-            Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(Error::new(
-                // Gem parity: generate raises GeneratorError for a
-                // string ascii_only cannot represent.
-                nosj_exception(ruby, "GeneratorError"),
-                "source sequence is illegal/malformed utf-8",
-            )),
-            Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(Error::new(
-                nosj_exception(ruby, "GeneratorError"),
-                format!("{spelling} not allowed in JSON"),
-            )),
-            Err(nosj::DriveError::Sink(_)) => {
-                Err(parser_error(ruby, "reformat pass aborted".into()))
-            }
-            Err(nosj::DriveError::Parse(e)) => {
-                Err(parser_error_at(ruby, input, e.offset, e.to_string()))
-            }
-        }
+        drive_hashless(input, po, |check_dups| {
+            buf.clear();
+            // The output is at least input-sized for minify-shaped runs.
+            buf.reserve(input.len());
+            with_pull_state(|state| {
+                let mut sink = PipeSink {
+                    w: Writer::new(buf, &wopts),
+                    depth: 0,
+                    max_nesting: po.max_nesting,
+                    allow_nan: gcfg.allow_nan,
+                    dup_keys: DupKeys::new(&mut state.dup, check_dups),
+                };
+                // Safety: callers verified UTF-8 (coderange or full scan).
+                unsafe {
+                    nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts)
+                }
+            })
+        })
+        .map_err(|failure| drive_error(ruby, failure, po, input, (0, input.len())))?;
+        finish_string(buf)
     })
 }
 
