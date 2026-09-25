@@ -148,21 +148,18 @@ impl Default for GenConfig {
     }
 }
 
-fn opt_bytes(r: &mut OptReader, opt: Opt, name: &str) -> Result<Option<Vec<u8>>, Error> {
+/// A formatting string option's bytes; empty when absent or nil.
+fn opt_bytes(r: &mut OptReader, opt: Opt) -> Result<Vec<u8>, Error> {
     let Some(v) = r.get(opt).filter(|v| !v.is_nil()) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let s = RString::from_value(v).ok_or_else(|| {
         Error::new(
             r.ruby().exception_type_error(),
-            format!("{name} must be a String"),
+            format!("{} must be a String", opt.name()),
         )
     })?;
-    Ok(Some(unsafe { s.as_slice() }.to_vec()))
-}
-
-fn opt_bool(r: &mut OptReader, opt: Opt) -> Option<bool> {
-    r.get(opt).filter(|v| !v.is_nil()).map(|v| v.to_bool())
+    Ok(unsafe { s.as_slice() }.to_vec())
 }
 
 /// Decode a generate options hash (nil takes [`DEFAULT_CONFIG`] at the
@@ -183,36 +180,21 @@ pub(crate) fn parse_gen_opts(ruby: &Ruby, opts: Value) -> Result<(GenConfig, usi
 /// Read the json 3 generate options and the buffer size hint. sort_keys
 /// and as_json, which NOSJ does not implement, raise unless falsy.
 pub(crate) fn read_gen_opts(r: &mut OptReader) -> Result<(GenConfig, usize), Error> {
-    let mut cfg = GenConfig::default();
+    let mut cfg = GenConfig {
+        indent: opt_bytes(r, Opt::Indent)?,
+        space: opt_bytes(r, Opt::Space)?,
+        space_before: opt_bytes(r, Opt::SpaceBefore)?,
+        object_nl: opt_bytes(r, Opt::ObjectNl)?,
+        array_nl: opt_bytes(r, Opt::ArrayNl)?,
+        allow_nan: r.truthy(Opt::AllowNan),
+        strict: r.truthy(Opt::Strict),
+        allow_duplicate_key: r.truthy(Opt::AllowDuplicateKey),
+        ..GenConfig::default()
+    };
     let mut cap_hint = 0usize;
-
-    if let Some(v) = opt_bytes(r, Opt::Indent, "indent")? {
-        cfg.indent = v;
-    }
-    if let Some(v) = opt_bytes(r, Opt::Space, "space")? {
-        cfg.space = v;
-    }
-    if let Some(v) = opt_bytes(r, Opt::SpaceBefore, "space_before")? {
-        cfg.space_before = v;
-    }
-    if let Some(v) = opt_bytes(r, Opt::ObjectNl, "object_nl")? {
-        cfg.object_nl = v;
-    }
-    if let Some(v) = opt_bytes(r, Opt::ArrayNl, "array_nl")? {
-        cfg.array_nl = v;
-    }
-    if let Some(v) = opt_bool(r, Opt::AllowNan) {
-        cfg.allow_nan = v;
-    }
-    if let Some(v) = opt_bool(r, Opt::Strict) {
-        cfg.strict = v;
-    }
-    if let Some(v) = opt_bool(r, Opt::AllowDuplicateKey) {
-        cfg.allow_duplicate_key = v;
-    }
     r.tolerate(&[Opt::SortKeys, Opt::AsJson]);
-    let ascii = opt_bool(r, Opt::AsciiOnly).unwrap_or(false);
-    let script = opt_bool(r, Opt::ScriptSafe).unwrap_or(false);
+    let ascii = r.truthy(Opt::AsciiOnly);
+    let script = r.truthy(Opt::ScriptSafe);
     if ascii {
         cfg.mode = EscapeMode::AsciiOnly;
         if script {

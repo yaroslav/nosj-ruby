@@ -60,7 +60,7 @@ impl Opt {
         1 << self as u32
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         NAMES[self as usize]
     }
 }
@@ -68,8 +68,9 @@ impl Opt {
 pub(crate) struct OptReader<'a> {
     ruby: &'a Ruby,
     hash: RHash,
-    /// Options asked for, and the subset present in the hash.
-    read: u64,
+    /// The hash's key count, read once.
+    len: usize,
+    /// Options read and present in the hash.
     found: u64,
     /// Options accepted only while falsy (see [`OptReader::tolerate`]).
     tolerated: u64,
@@ -80,7 +81,7 @@ impl<'a> OptReader<'a> {
         Self {
             ruby,
             hash,
-            read: 0,
+            len: hash.len(),
             found: 0,
             tolerated: 0,
         }
@@ -90,10 +91,21 @@ impl<'a> OptReader<'a> {
         self.ruby
     }
 
+    fn all_found(&self) -> bool {
+        self.found.count_ones() as usize == self.len
+    }
+
     /// The value under `opt`'s Symbol key; an explicit nil is present.
+    /// Once every key is found, the rest are absent without a lookup
+    /// (`{symbolize_names: true}` costs one lookup, not six). An option
+    /// read twice (reformat reads a few for both parsing and
+    /// generating) is looked up again.
     pub(crate) fn get(&mut self, opt: Opt) -> Option<Value> {
-        self.read |= opt.bit();
-        let value = self.hash.get(self.ruby.to_symbol(opt.name()));
+        if self.all_found() && self.found & opt.bit() == 0 {
+            return None;
+        }
+        // An interned StaticSymbol: no String allocation per lookup.
+        let value = self.hash.get(self.ruby.sym_new(opt.name()));
         if value.is_some() {
             self.found |= opt.bit();
         }
@@ -118,7 +130,7 @@ impl<'a> OptReader<'a> {
     /// Raise for keys no read asked for, and for tolerated options set
     /// to something truthy.
     pub(crate) fn finish(self) -> Result<(), Error> {
-        if self.found.count_ones() as usize == self.hash.len() {
+        if self.all_found() {
             return Ok(());
         }
         self.leftover_keys()
@@ -127,7 +139,7 @@ impl<'a> OptReader<'a> {
     #[cold]
     #[inline(never)]
     fn leftover_keys(self) -> Result<(), Error> {
-        let (read, tolerated) = (self.read, self.tolerated);
+        let (found, tolerated) = (self.found, self.tolerated);
         let option_of = |key: Value| {
             let name = Symbol::from_value(key)?.name().ok()?;
             NAMES.iter().position(|known| *known == name)
@@ -136,7 +148,7 @@ impl<'a> OptReader<'a> {
         let mut unsupported = None;
         self.hash.foreach(|key: Value, value: Value| {
             match option_of(key).map(|index| 1u64 << index) {
-                Some(bit) if read & bit != 0 => {}
+                Some(bit) if found & bit != 0 => {}
                 Some(bit) if tolerated & bit != 0 => {
                     if value.to_bool() {
                         unsupported = Some(key.to_string());
