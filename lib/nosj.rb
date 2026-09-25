@@ -98,10 +98,12 @@ module NOSJ
   # @param source [String] the JSON document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] +symbolize_names+, +freeze+, +max_nesting+
   #   (Integer or +false+ for unlimited), +allow_nan+,
-  #   +allow_trailing_comma+
+  #   +allow_trailing_comma+, +allow_duplicate_key+ (json 3 semantics:
+  #   a repeated key raises unless this is true, then the last one wins)
   # @return [Object] the parsed value tree
-  # @raise [ParserError] when the document is malformed or not UTF-8;
-  #   carries the failure position ({ParserError#line} and friends)
+  # @raise [ParserError] when the document is malformed, repeats a key,
+  #   holds a lone surrogate (+"\udc00"+), or is not UTF-8; carries the
+  #   failure position ({ParserError#line} and friends)
   # @raise [NestingError] when nesting exceeds +max_nesting+
   # @raise [ArgumentError] for unsupported options
   def self.parse(source, opts = nil)
@@ -323,18 +325,19 @@ module NOSJ
   # Minifies a document without building any Ruby values: the parser's
   # events pipe straight into the emission kernels, SIMD in and SIMD
   # out. Output is exactly what <code>generate(parse(json))</code>
-  # would produce, except duplicate object keys pass through instead of
-  # being collapsed (a reformatter must not silently drop data).
-  # Numbers come out in the canonical spelling (+1.50+ becomes +1.5+)
-  # and string escapes are normalized.
+  # would produce, and it accepts exactly what {.parse} accepts; under
+  # +allow_duplicate_key+, repeated keys pass through instead of being
+  # collapsed (a reformatter must not silently drop data). Numbers come
+  # out in the canonical spelling (+1.50+ becomes +1.5+) and string
+  # escapes are normalized.
   #
   # @example
   #   NOSJ.minify(%({ "a": [1, 2],\n  "b": "x" }))  #=> '{"a":[1,2],"b":"x"}'
   #
   # @param json [String] the document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] acceptance options (+allow_nan+,
-  #   +allow_trailing_comma+, +max_nesting+); trailing commas are
-  #   normalized away when accepted
+  #   +allow_trailing_comma+, +allow_duplicate_key+, +max_nesting+);
+  #   trailing commas are normalized away when accepted
   # @return [String] the minified document
   # @raise [ParserError] when the document is malformed
   # @raise [NestingError] past +max_nesting+
@@ -358,8 +361,7 @@ module NOSJ
   # @return [String] the reformatted document
   # @raise [ParserError] when the document is malformed
   # @raise [NestingError] past +max_nesting+
-  # @raise [GeneratorError] when +ascii_only+ meets a lone-surrogate
-  #   string it cannot represent
+  # @raise [GeneratorError] for a non-finite float without +allow_nan+
   def self.reformat(json, opts = nil)
     if opts&.key?(:pretty)
       pretty = opts[:pretty]
@@ -598,7 +600,9 @@ module NOSJ
   #
   # @param source [String] the JSON document (UTF-8 or US-ASCII)
   # @param opts [Hash, nil] +max_nesting+, +allow_nan+,
-  #   +allow_trailing_comma+ (acceptance options only)
+  #   +allow_trailing_comma+ (acceptance options only). Being a
+  #   diagnostic, stats also describes documents {.parse} would refuse
+  #   for a repeated key or a lone surrogate.
   # @return [Hash] the statistics described above
   # @raise [ParserError] when the document is malformed or not UTF-8
   def self.stats(source, opts = nil)

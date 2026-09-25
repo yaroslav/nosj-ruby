@@ -27,19 +27,24 @@ RSpec.describe "NOSJ.minify / NOSJ.reformat" do
     expect(NOSJ.minify(src)).to eq(%({"a":[1.5,100.0,"A"]}))
   end
 
-  it "preserves duplicate keys and big-integer digits verbatim" do
-    expect(NOSJ.minify(%({"a": 1, "a": 2}))).to eq(%({"a":1,"a":2}))
+  it "refuses duplicate keys like parse, and preserves them under allow_duplicate_key" do
+    expect { NOSJ.minify(%({"a": 1, "a": 2})) }
+      .to raise_error(NOSJ::ParserError, 'duplicate key "a" at byte 0')
+    expect(NOSJ.minify(%({"a": 1, "a": 2}), allow_duplicate_key: true)).to eq(%({"a":1,"a":2}))
+    keys = (1..40).map { %("k#{_1}": #{_1}) }
+    expect { NOSJ.minify("{#{keys.join(",")}, \"k40\": 0}") }.to raise_error(NOSJ::ParserError)
+    expect(NOSJ.minify("{#{keys.join(",")}}")).to eq(NOSJ.generate(NOSJ.parse("{#{keys.join(",")}}")))
+  end
+
+  it "preserves big-integer digits verbatim" do
     digits = "123456789012345678901234567890"
     expect(NOSJ.minify(%([#{digits}]))).to eq("[#{digits}]")
   end
 
-  it "re-escapes lone-surrogate values so output always reparses" do
-    expect(NOSJ.minify(%("\\udc00"))).to eq(%("\\udc00"))
-    mixed = %("a\\udc00é")
-    expect(NOSJ.parse(NOSJ.minify(mixed)).bytes).to eq(NOSJ.parse(mixed).bytes)
-    expect(NOSJ.reformat(%(["\\udc00"]), ascii_only: true)).to eq(%(["\\udc00"]))
-    expect { NOSJ.minify(%({"\\udc00": 1})) }
-      .to raise_error(NOSJ::GeneratorError, /malformed utf-8/)
+  it "refuses lone surrogates like parse" do
+    expect { NOSJ.minify(%(["\\udc00"])) }
+      .to raise_error(NOSJ::ParserError, "lone UTF-16 surrogate at byte 1")
+    expect { NOSJ.minify(%({"\\udc00": 1})) }.to raise_error(NOSJ::ParserError)
   end
 
   it "honors acceptance options and normalizes what they accept" do
@@ -60,12 +65,12 @@ RSpec.describe "NOSJ.minify / NOSJ.reformat" do
       .to raise_error(NOSJ::GeneratorError, "-Infinity not allowed in JSON")
     expect(NOSJ.minify("[1e999]", allow_nan: true)).to eq("[Infinity]")
     expect(NOSJ.generate(NOSJ.parse("[1e999]"), allow_nan: true)).to eq("[Infinity]")
-    # The pipe streams duplicate-key entries parse would discard, so an
-    # overflowing literal shadowed by a duplicate still refuses even
-    # though generate(parse(x)) succeeds (fuzz find).
+    # Under allow_duplicate_key the pipe streams entries parse would
+    # discard, so an overflowing literal shadowed by a duplicate still
+    # refuses even though generate(parse(x)) succeeds (fuzz find).
     shadowed = %({"b": [1e999], "b": 1})
-    expect(NOSJ.generate(NOSJ.parse(shadowed))).to eq(%({"b":1}))
-    expect { NOSJ.minify(shadowed) }
+    expect(NOSJ.generate(NOSJ.parse(shadowed, allow_duplicate_key: true))).to eq(%({"b":1}))
+    expect { NOSJ.minify(shadowed, allow_duplicate_key: true) }
       .to raise_error(NOSJ::GeneratorError, "Infinity not allowed in JSON")
   end
 

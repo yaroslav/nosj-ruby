@@ -25,10 +25,33 @@ RSpec.describe "NOSJ.parse" do
     expect(NOSJ.parse("-#{2**100}")).to eq(-(2**100))
   end
 
-  it "keeps the last value for duplicate keys, like the gem" do
-    src = '{"a":1,"a":2}'
-    expect(NOSJ.parse(src)).to eq(JSON.parse(src))
-    expect(NOSJ.parse(src)).to eq({"a" => 2})
+  describe "duplicate keys (json 3 semantics)" do
+    it "raises by default, positioned at the object repeating the key" do
+      expect { NOSJ.parse('{"a":1,"a":2}') }
+        .to raise_error(NOSJ::ParserError, 'duplicate key "a" at byte 0')
+      # The innermost offending object is reported first, like json 3.
+      error = begin
+        NOSJ.parse(%({\n  "k": {"z": 0, "z": 1},\n  "k": 2\n}))
+      rescue NOSJ::ParserError => e
+        e
+      end
+      expect([error.message, error.line, error.column]).to eq(['duplicate key "z" at byte 9', 2, 8])
+    end
+
+    it "keeps the last value under allow_duplicate_key: true, like json 2 and 3" do
+      src = '{"a":1,"a":2}'
+      expect(NOSJ.parse(src, allow_duplicate_key: true)).to eq({"a" => 2})
+      expect(NOSJ.parse(src, allow_duplicate_key: true))
+        .to eq(JSON.parse(src, allow_duplicate_key: true))
+    end
+
+    it "detects repeats in large objects and symbolized keys too" do
+      keys = (1..40).map { %("k#{_1}": #{_1}) }
+      big = "{#{keys.join(",")}, \"k7\": 0}"
+      expect { NOSJ.parse(big) }.to raise_error(NOSJ::ParserError, /duplicate key "k7"/)
+      expect { NOSJ.parse(big, symbolize_names: true) }.to raise_error(NOSJ::ParserError)
+      expect(NOSJ.parse("{#{keys.join(",")}}").size).to eq(40)
+    end
   end
 
   describe "symbolize_names:" do
@@ -86,11 +109,10 @@ RSpec.describe "NOSJ.parse" do
     end
   end
 
-  it "handles lone surrogates like the gem" do
-    # Lone LOW surrogate: both parsers produce the raw WTF-8 bytes.
-    low = '"\udc00"'
-    expect(NOSJ.parse(low).bytes).to eq(JSON.parse(low).bytes)
-    # Lone HIGH surrogate is an error in both.
+  it "rejects lone surrogates, trailing ones included (json 3 semantics)" do
+    expect { NOSJ.parse('["\udc00"]') }
+      .to raise_error(NOSJ::ParserError, "lone UTF-16 surrogate at byte 1")
+    expect { NOSJ.parse('{"\udc00": 1}') }.to raise_error(NOSJ::ParserError)
     expect { NOSJ.parse('"\ud800"') }.to raise_error(NOSJ::ParserError)
     expect { JSON.parse('"\ud800"') }.to raise_error(JSON::ParserError)
     # A proper pair decodes to the astral character.

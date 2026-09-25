@@ -23,6 +23,7 @@ pub mod files;
 pub mod gen;
 pub mod lazy;
 pub mod lines;
+pub mod locate;
 pub mod parse;
 pub mod patch;
 pub mod pointer;

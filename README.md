@@ -108,7 +108,8 @@ The `json` gem API, on the `NOSJ` module:
 
 ```ruby
 NOSJ.parse(src, symbolize_names: true)   # also: freeze, max_nesting,
-                                         # allow_nan, allow_trailing_comma
+                                         # allow_nan, allow_trailing_comma,
+                                         # allow_duplicate_key
 NOSJ.generate(obj)                       # indent, space, object_nl, ...,
 NOSJ.pretty_generate(obj)                # ascii_only, script_safe, strict
 ```
@@ -189,10 +190,11 @@ NOSJ.reformat_file("big.json")           # straight off a memory map
 ```
 
 Output is exactly `generate(parse(json))`—canonical number spellings,
-normalized escapes, same formatting options—except duplicate keys pass
-through (a reformatter must not silently drop data) and lone-surrogate
-strings re-escape instead of raising. Acceptance options apply too:
-`minify(src, allow_trailing_comma: true)` normalizes the commas away.
+normalized escapes, same formatting options—and it accepts exactly what
+`parse` does. Acceptance options apply too:
+`minify(src, allow_trailing_comma: true)` normalizes the commas away,
+and under `allow_duplicate_key: true` repeated keys pass through (a
+reformatter must not silently drop data).
 
 ### Byte-splicing edits and JSON Patch
 

@@ -38,6 +38,24 @@ RSpec.describe "NOSJ.valid?" do
     expect(NOSJ.valid?("[NaN]", allow_nan: true)).to be(true)
   end
 
+  it "agrees with parse on duplicate keys and lone surrogates (json 3 semantics)" do
+    # Objects small (pairwise compare), mid-sized (seen-table), and large
+    # (sort) take different close-time checks.
+    [3, 40, 300].each do |size|
+      keys = (1..size).map { %("k#{_1}": #{_1}) }
+      unique = "{#{keys.join(",")}}"
+      repeated = "{#{keys.join(",")}, \"k#{size / 2}\": 0}"
+      expect(NOSJ.valid?(unique)).to be(true), "#{size} unique"
+      expect(NOSJ.valid?(repeated)).to be(false), "#{size} repeated"
+      expect(NOSJ.valid?(repeated, allow_duplicate_key: true)).to be(true)
+      expect { NOSJ.parse(repeated) }.to raise_error(NOSJ::ParserError)
+    end
+    # A repeat only across sibling objects is fine.
+    expect(NOSJ.valid?('[{"a":1},{"a":2}]')).to be(true)
+    expect(NOSJ.valid?('{"a":{"a":1}}')).to be(true)
+    expect(NOSJ.valid?('["\udc00"]')).to be(false)
+  end
+
   it "honors max_nesting like parse" do
     deep = "[" * 101 + "]" * 101
     expect(NOSJ.valid?(deep)).to be(false)

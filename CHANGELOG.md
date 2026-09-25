@@ -1,3 +1,19 @@
+## [Unreleased]
+
+nosj now follows json 3.0 semantics by default. These are behavior
+changes for documents that were accepted before:
+
+- Duplicate object keys raise `NOSJ::ParserError` (positioned at the
+  object repeating the key, like json 3) in `parse`, `load_file`,
+  `valid?` (returns false), `minify`/`reformat`, and everything that
+  materializes values. `allow_duplicate_key: true` restores the old
+  behavior: the last value wins (in `minify`, repeated keys pass
+  through).
+- Lone UTF-16 surrogates such as `"\udc00"` raise `NOSJ::ParserError`
+  everywhere, trailing ones included (they used to decode to raw
+  WTF-8 bytes, and `minify` re-escaped them).
+- `stats` still describes such documents rather than refusing them.
+
 ## [0.4.1] - 2026-09-25
 
 - Fixed a crash in `NOSJ.generate`: an object whose `to_json` or

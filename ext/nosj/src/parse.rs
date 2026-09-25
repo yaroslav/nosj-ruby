@@ -7,7 +7,7 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::{nesting_error, parser_error, parser_error_at};
-use crate::sink::{NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
+use crate::sink::{DupKeys, NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
 use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
 
 pub(crate) use crate::errors::parser_error as err;
@@ -51,6 +51,8 @@ pub(crate) struct ParseNativeOpts {
     pub(crate) symbolize: bool,
     pub(crate) freeze: bool,
     pub(crate) max_nesting: usize,
+    /// json 3 default: a repeated key raises.
+    pub(crate) allow_duplicate_key: bool,
     pub(crate) popts: nosj::ParseOptions,
 }
 
@@ -60,6 +62,7 @@ impl Default for ParseNativeOpts {
             symbolize: false,
             freeze: false,
             max_nesting: MAX_NESTING,
+            allow_duplicate_key: false,
             popts: nosj::ParseOptions::default(),
         }
     }
@@ -86,6 +89,7 @@ pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeO
 
     out.symbolize = truthy("symbolize_names");
     out.freeze = truthy("freeze");
+    out.allow_duplicate_key = truthy("allow_duplicate_key");
     out.popts.allow_nan = truthy("allow_nan");
     out.popts.allow_trailing_comma = truthy("allow_trailing_comma");
 
@@ -118,6 +122,46 @@ pub(crate) fn parse_native_opts(ruby: &Ruby, opts: Value) -> Result<ParseNativeO
     Ok(out)
 }
 
+/// ParserError for a duplicate key a sink refused in `source[start..end]`,
+/// positioned like json 3's: at the `{` of the object repeating it (or
+/// unpositioned when the document nests past the walk's depth limit).
+pub(crate) fn duplicate_key_error(
+    ruby: &Ruby,
+    source: &[u8],
+    start: usize,
+    end: usize,
+    popts: nosj::ParseOptions,
+) -> Error {
+    use magnus::value::ReprValue;
+    match crate::locate::duplicate_key(&source[start..end], popts) {
+        Some((at, key)) => parser_error_at(
+            ruby,
+            source,
+            start + at,
+            format!(
+                "duplicate key {} at byte {at}",
+                ruby.str_new(&key).inspect()
+            ),
+        ),
+        None => parser_error(ruby, "duplicate key".into()),
+    }
+}
+
+/// ParserError for a lone surrogate a sink refused in
+/// `source[start..end]`, at the offending string.
+pub(crate) fn lone_surrogate_error(
+    ruby: &Ruby,
+    source: &[u8],
+    start: usize,
+    end: usize,
+    popts: nosj::ParseOptions,
+) -> Error {
+    match crate::locate::first_walk_error(&source[start..end], popts) {
+        Some(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
+        None => parser_error(ruby, "lone UTF-16 surrogate".into()),
+    }
+}
+
 /// Pop the root value off the sink stack, or map a drive failure onto
 /// the gem's exceptions. Shared by every driver. `source`/`base` locate
 /// the driven bytes within the full document, so ParserError positions
@@ -126,10 +170,11 @@ fn finish_drive(
     ruby: &Ruby,
     result: Result<(), nosj::DriveError<SinkAbort>>,
     stack: &mut Vec<rb_sys::VALUE>,
-    max_nesting: usize,
+    o: &ParseNativeOpts,
     source: &[u8],
-    base: usize,
+    (base, end): (usize, usize),
 ) -> Result<Value, Error> {
+    let max_nesting = o.max_nesting;
     match result {
         Ok(()) => {
             let raw = stack
@@ -147,13 +192,14 @@ fn finish_drive(
             ruby,
             format!("nesting of {} is too deep", max_nesting.saturating_add(1)),
         )),
+        Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) => {
+            Err(duplicate_key_error(ruby, source, base, end, o.popts))
+        }
+        Err(nosj::DriveError::Sink(SinkAbort::LoneSurrogate)) => {
+            Err(lone_surrogate_error(ruby, source, base, end, o.popts))
+        }
         // Raised only by the reformat pipe's sink, which never drives
         // through here; the match must stay total.
-        Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(parser_error(
-            ruby,
-            "source sequence is illegal/malformed utf-8".into(),
-        )),
-        // Also reformat-pipe-only, kept total for the same reason.
         Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(parser_error(
             ruby,
             format!("{spelling} not allowed in JSON"),
@@ -207,13 +253,14 @@ pub(crate) fn materialize_at(
             symbolize: o.symbolize,
             freeze: o.freeze,
             max_nesting: o.max_nesting,
+            allow_duplicate_key: o.allow_duplicate_key,
         };
 
         // Safety: callers verified UTF-8 (coderange or nosj slice).
         let result = unsafe {
             nosj::parse_utf8_unchecked_with(&source[start..end], bufs, &mut sink, o.popts)
         };
-        finish_drive(ruby, result, sink.stack, o.max_nesting, source, start)
+        finish_drive(ruby, result, sink.stack, o, source, (start, end))
     })
 }
 
@@ -243,14 +290,24 @@ pub fn valid_native(
     let Ok(input) = utf8_input(ruby, &data) else {
         return Ok(false);
     };
-    let ok = with_pull_state(|state| {
-        let mut sink = NullSink {
-            depth: 0,
-            max_nesting: o.max_nesting,
-        };
-        // Safety: coderange verified by utf8_input.
-        unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
-            .is_ok()
-    });
-    Ok(ok)
+    let validate = |check_dups: bool| {
+        with_pull_state(|state| {
+            let mut sink = NullSink {
+                depth: 0,
+                max_nesting: o.max_nesting,
+                dup_keys: DupKeys::new(&mut state.fingerprints, &mut state.seen, check_dups),
+            };
+            // Safety: coderange verified by utf8_input.
+            unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
+        })
+    };
+    Ok(match validate(!o.allow_duplicate_key) {
+        Ok(()) => true,
+        // Fingerprints matched: a real repeat is invalid; a collision
+        // means the rest of the document still needs validating.
+        Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) => {
+            crate::locate::duplicate_key(input, o.popts).is_none() && validate(false).is_ok()
+        }
+        Err(_) => false,
+    })
 }

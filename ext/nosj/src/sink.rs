@@ -1,7 +1,8 @@
 //! The nosj sinks: `RubyValueSink` builds Ruby VALUEs directly during
 //! the parse (with interned-key caches and gem-compatible option
 //! handling); `NullSink` powers `NOSJ.valid?` by discarding every
-//! event. Raw VALUE construction helpers live here too.
+//! event; `DupKeys` gives hash-less sinks duplicate-key detection. Raw
+//! VALUE construction helpers live here too.
 
 use ahash::AHashMap;
 
@@ -17,22 +18,161 @@ pub(crate) const MAX_NESTING: usize = 100;
 const KEY_CACHE_CAP: usize = 2048;
 
 /// Why a sink stopped the drive; mapped onto the gem's exceptions in
-/// [`crate::parse::finish_drive`].
+/// [`crate::parse::finish_drive`]. Sinks see no offsets, so the two
+/// document refusals get their position from a cold-path re-walk
+/// (`crate::locate`).
 pub(crate) enum SinkAbort {
     Overflow,
     BadBigint,
     TooDeep,
-    /// The reformat pipe met a WTF-8 (lone-surrogate) object KEY,
-    /// which the Writer has no pre-serialized escape hatch for; gem
-    /// parity is the GeneratorError `generate` raises on the
-    /// equivalent broken-coderange string. (String VALUES re-escape
-    /// as \uXXXX instead.)
-    BrokenUtf8Output,
+    /// An object repeats a key and `allow_duplicate_key` is off (json
+    /// 3 semantics). From `DupKeys` it may be a fingerprint collision,
+    /// which the exact cold-path check rules out.
+    DuplicateKey,
+    /// A string or key decodes to a lone UTF-16 surrogate (json 3
+    /// rejects trailing ones too, not only leading ones).
+    LoneSurrogate,
     /// The reformat pipe met a non-finite float without `allow_nan`.
     /// Parsing accepts huge-exponent literals like 1e999 as Infinity
     /// even in strict mode (gem parity), but generation refuses them;
     /// carries the JSON spelling for the gem-exact error message.
     NonFiniteFloat(&'static str),
+}
+
+/// Duplicate-key detection for sinks that build no Hash (validation and
+/// the reformat pipe): each key is remembered as a 64-bit fingerprint,
+/// `mark()` at a container's start is the fingerprint count, and an
+/// object's close checks only its own keys. Integers, because comparing
+/// them is what keeps this cheap: comparing the key bytes themselves
+/// measured up to 93% slower (twitter's 40-key objects). A fingerprint
+/// collision reads as a duplicate, so callers confirm a hit exactly on
+/// the cold path; a collision can only cost time.
+///
+/// Measured split (twitter `valid?`): hashing and pushing each key is
+/// ~0-2%; the close-time check is the cost, hence [`SeenTable`].
+pub(crate) struct DupKeys<'a> {
+    fingerprints: &'a mut Vec<u64>,
+    table: &'a mut SeenTable,
+    enabled: bool,
+}
+
+/// Fixed seeds: fingerprints only need to spread keys, and a collision
+/// merely sends the document to the exact cold-path check. (A leaner
+/// hand-rolled hash measured no faster: hashing is not the cost.)
+const FINGERPRINT: ahash::RandomState = ahash::RandomState::with_seeds(
+    0x243f_6a88_85a3_08d3,
+    0x1319_8a2e_0370_7344,
+    0xa409_3822_299f_31d0,
+    0x082e_fa98_ec4e_6c89,
+);
+
+/// Objects up to this many keys compare pairwise (a few compares beat
+/// any table traffic).
+const PAIRWISE_MAX: usize = 8;
+/// Table slots; a power of two, so a fingerprint's low bits index it.
+const TABLE_SLOTS: usize = 256;
+/// Objects up to this many keys use the table, which then stays at
+/// least half empty; larger ones sort.
+const TABLE_MAX_KEYS: usize = TABLE_SLOTS / 2;
+
+/// Open-addressing set for one object's close: fingerprints are already
+/// uniformly mixed, so their low bits index it directly, and one probe
+/// per key usually decides. Each close claims a fresh epoch, and a slot
+/// is empty unless it carries the current one, so nothing is cleared
+/// between objects.
+pub(crate) struct SeenTable {
+    slots: Box<[(u64, u32)]>,
+    epoch: u32,
+}
+
+impl Default for SeenTable {
+    fn default() -> Self {
+        SeenTable {
+            slots: vec![(0, 0); TABLE_SLOTS].into_boxed_slice(),
+            epoch: 0,
+        }
+    }
+}
+
+impl SeenTable {
+    /// Whether `keys` repeats a fingerprint. Callers keep
+    /// `keys.len() <= TABLE_MAX_KEYS`, so a free slot always exists.
+    #[inline(always)]
+    fn any_repeat(&mut self, keys: &[u64]) -> bool {
+        const MASK: usize = TABLE_SLOTS - 1;
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            // Epoch 0 marks an empty slot; after a full wrap, really clear.
+            self.slots.fill((0, 0));
+            self.epoch = 1;
+        }
+        let epoch = self.epoch;
+        for &fp in keys {
+            let mut at = fp as usize & MASK;
+            loop {
+                let slot = &mut self.slots[at];
+                if slot.1 != epoch {
+                    *slot = (fp, epoch);
+                    break;
+                }
+                if slot.0 == fp {
+                    return true;
+                }
+                at = (at + 1) & MASK;
+            }
+        }
+        false
+    }
+}
+
+impl<'a> DupKeys<'a> {
+    pub(crate) fn new(
+        fingerprints: &'a mut Vec<u64>,
+        table: &'a mut SeenTable,
+        enabled: bool,
+    ) -> Self {
+        fingerprints.clear();
+        DupKeys {
+            fingerprints,
+            table,
+            enabled,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn mark(&self) -> usize {
+        self.fingerprints.len()
+    }
+
+    #[inline(always)]
+    pub(crate) fn key(&mut self, key: &[u8]) {
+        if self.enabled {
+            self.fingerprints.push(FINGERPRINT.hash_one(key));
+        }
+    }
+
+    /// Close the object whose keys start at `mark`.
+    #[inline(always)]
+    pub(crate) fn close(&mut self, mark: usize) -> Result<(), SinkAbort> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let keys = &mut self.fingerprints[mark..];
+        let repeated = match keys.len() {
+            n if n <= PAIRWISE_MAX => (1..n).any(|i| keys[..i].contains(&keys[i])),
+            n if n <= TABLE_MAX_KEYS => self.table.any_repeat(keys),
+            _ => {
+                keys.sort_unstable();
+                keys.windows(2).any(|w| w[0] == w[1])
+            }
+        };
+        self.fingerprints.truncate(mark);
+        if repeated {
+            Err(SinkAbort::DuplicateKey)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Integer VALUE for `i` via rb-sys's inline `LONG2NUM` (the header
@@ -143,6 +283,7 @@ pub(crate) struct RubyValueSink<'a> {
     pub(crate) symbolize: bool,
     pub(crate) freeze: bool,
     pub(crate) max_nesting: usize,
+    pub(crate) allow_duplicate_key: bool,
 }
 
 // Tried and rejected (2026-07-10): a jiter-style cache of repeated VALUE
@@ -225,35 +366,14 @@ impl nosj::Sink for RubyValueSink<'_> {
         self.push_raw(raw)
     }
 
-    /// Lone-low-surrogate content: gem parity is a UTF-8-encoded Ruby string
-    /// carrying the raw WTF-8 bytes (broken coderange, like the gem's).
-    #[inline(always)]
-    fn str_bytes(&mut self, value: &[u8]) -> Result<(), SinkAbort> {
-        let raw = unsafe {
-            let s = rb_sys::rb_utf8_str_new(
-                value.as_ptr() as *const std::os::raw::c_char,
-                value.len() as std::os::raw::c_long,
-            );
-            if self.freeze {
-                rb_sys::rb_str_freeze(s)
-            } else {
-                s
-            }
-        };
-        self.push_raw(raw)
+    /// Lone-surrogate content (the crate hands it over as WTF-8): json 3
+    /// rejects it, trailing surrogates included.
+    fn str_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
+        Err(SinkAbort::LoneSurrogate)
     }
 
-    #[inline(always)]
-    fn key_bytes(&mut self, key: &[u8]) -> Result<(), SinkAbort> {
-        // Interning is skipped: these keys are pathological, not hot.
-        let raw = unsafe {
-            rb_sys::rb_utf8_str_new(
-                key.as_ptr() as *const std::os::raw::c_char,
-                key.len() as std::os::raw::c_long,
-            )
-        };
-        let frozen = unsafe { rb_sys::rb_str_freeze(raw) };
-        self.push_raw(frozen)
+    fn key_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
+        Err(SinkAbort::LoneSurrogate)
     }
 
     #[inline(always)]
@@ -311,19 +431,28 @@ impl nosj::Sink for RubyValueSink<'_> {
             }
         }
         self.stack.truncate(mark);
+        // A repeated key collapses into one entry: the hash comes out
+        // smaller than the pair count (one size read per object).
+        if !self.allow_duplicate_key
+            && (unsafe { rb_sys::macros::RHASH_SIZE(hash_raw) } as usize) < pairs
+        {
+            return Err(SinkAbort::DuplicateKey);
+        }
         self.push_raw(hash_raw)
     }
 }
 
 /// Validation-only sink: every event is a no-op except nesting-depth
-/// tracking, so `NOSJ.valid?` runs the full parser (tokenizers,
-/// string decode, number validation) without allocating a single VALUE.
-pub(crate) struct NullSink {
+/// tracking and duplicate-key fingerprints, so `NOSJ.valid?` runs the
+/// full parser (tokenizers, string decode, number validation) without
+/// allocating a single VALUE.
+pub(crate) struct NullSink<'a> {
     pub(crate) depth: usize,
     pub(crate) max_nesting: usize,
+    pub(crate) dup_keys: DupKeys<'a>,
 }
 
-impl nosj::Sink for NullSink {
+impl nosj::Sink for NullSink<'_> {
     type Error = SinkAbort;
 
     fn null(&mut self) -> Result<(), SinkAbort> {
@@ -344,14 +473,18 @@ impl nosj::Sink for NullSink {
     fn str(&mut self, _: &str) -> Result<(), SinkAbort> {
         Ok(())
     }
-    fn key(&mut self, _: &str) -> Result<(), SinkAbort> {
+    fn key(&mut self, key: &str) -> Result<(), SinkAbort> {
+        self.dup_keys.key(key.as_bytes());
         Ok(())
     }
     fn str_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
-        Ok(())
+        Err(SinkAbort::LoneSurrogate)
+    }
+    fn key_bytes(&mut self, _: &[u8]) -> Result<(), SinkAbort> {
+        Err(SinkAbort::LoneSurrogate)
     }
     fn mark(&self) -> usize {
-        0
+        self.dup_keys.mark()
     }
     fn begin_array(&mut self) -> Result<(), SinkAbort> {
         self.depth += 1;
@@ -371,8 +504,8 @@ impl nosj::Sink for NullSink {
         self.depth -= 1;
         Ok(())
     }
-    fn end_object(&mut self, _: usize, _: usize) -> Result<(), SinkAbort> {
+    fn end_object(&mut self, mark: usize, _: usize) -> Result<(), SinkAbort> {
         self.depth -= 1;
-        Ok(())
+        self.dup_keys.close(mark)
     }
 }
