@@ -6,6 +6,7 @@ use magnus::{Error, RHash, RString, Ruby, Value};
 use nosj::emit::EscapeMode;
 
 use crate::opt_reader::{Opt, OptReader};
+use crate::sink::MAX_NESTING;
 
 pub(crate) struct GenConfig {
     pub(crate) indent: Vec<u8>,
@@ -32,119 +33,58 @@ pub(crate) struct GenConfig {
     pub(super) pretty: bool,
 }
 
+/// The json gem's defaults under an escape mode, for the plain walk or
+/// the Rails encoder's (which keeps ActiveSupport's own key handling,
+/// so it allows keys that render alike). A const fn because statics
+/// cannot struct-update a type with `Vec` fields; `Vec::new` is const
+/// and allocation-free.
+const fn defaults(rails: bool, mode: EscapeMode) -> GenConfig {
+    GenConfig {
+        indent: Vec::new(),
+        space: Vec::new(),
+        space_before: Vec::new(),
+        object_nl: Vec::new(),
+        array_nl: Vec::new(),
+        max_nesting: MAX_NESTING,
+        start_depth: 0,
+        allow_nan: false,
+        strict: false,
+        rails,
+        allow_duplicate_key: rails,
+        mode,
+        pretty: false,
+    }
+}
+
 /// The nil-options configuration, shared instead of rebuilt: stamping
 /// a fresh ~140-byte GenConfig onto the stack per call was measurable
 /// on tiny documents (the json gem likewise reuses a cached State for
-/// the default options). Safe as a static: `Vec::new` is const and
-/// allocation-free, and generation only ever borrows the config.
-pub(crate) static DEFAULT_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: false,
-    allow_duplicate_key: false,
-    mode: EscapeMode::Standard,
-    pretty: false,
-};
+/// the default options). Safe as a static: generation only ever
+/// borrows the config.
+pub(crate) static DEFAULT_CONFIG: GenConfig = defaults(false, EscapeMode::Standard);
 
 /// The Rails-encoder configuration for ActiveSupport's default escape
 /// flags (HTML entities and JS separators both on, the overwhelmingly
 /// common case): escaping is fused into the crate's HtmlSafe kernels,
 /// one pass, no post-scan.
-pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    allow_duplicate_key: true,
-    mode: EscapeMode::HtmlSafe,
-    pretty: false,
-};
+pub(super) static RAILS_HTML_SAFE_CONFIG: GenConfig = defaults(true, EscapeMode::HtmlSafe);
 
 /// Rails-encoder configuration with HTML entities on and JS separators
 /// off.
-pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    allow_duplicate_key: true,
-    mode: EscapeMode::HtmlEntities,
-    pretty: false,
-};
+pub(super) static RAILS_HTML_ENTITIES_CONFIG: GenConfig = defaults(true, EscapeMode::HtmlEntities);
 
 /// Rails-encoder configuration with JS separators on and HTML entities
 /// off.
-pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    allow_duplicate_key: true,
-    mode: EscapeMode::JsSeparators,
-    pretty: false,
-};
+pub(super) static RAILS_JS_SEPARATORS_CONFIG: GenConfig = defaults(true, EscapeMode::JsSeparators);
 
 /// The Rails-encoder configuration with every escape flag off
 /// (encode(escape: false)). Mirrors JSONGemEncoder#stringify, which
 /// generates with the json gem's defaults.
-pub(super) static RAILS_CONFIG: GenConfig = GenConfig {
-    indent: Vec::new(),
-    space: Vec::new(),
-    space_before: Vec::new(),
-    object_nl: Vec::new(),
-    array_nl: Vec::new(),
-    max_nesting: 100,
-    start_depth: 0,
-    allow_nan: false,
-    strict: false,
-    rails: true,
-    allow_duplicate_key: true,
-    mode: EscapeMode::Standard,
-    pretty: false,
-};
+pub(super) static RAILS_CONFIG: GenConfig = defaults(true, EscapeMode::Standard);
 
 impl Default for GenConfig {
     fn default() -> Self {
-        GenConfig {
-            indent: Vec::new(),
-            space: Vec::new(),
-            space_before: Vec::new(),
-            object_nl: Vec::new(),
-            array_nl: Vec::new(),
-            max_nesting: 100,
-            start_depth: 0,
-            allow_nan: false,
-            strict: false,
-            rails: false,
-            allow_duplicate_key: false,
-            mode: EscapeMode::Standard,
-            pretty: false,
-        }
+        defaults(false, EscapeMode::Standard)
     }
 }
 
