@@ -3,6 +3,7 @@
 //! Compact and pretty modes are one const-generic body, so the compact
 //! hot path carries no formatting branches.
 
+use magnus::Error;
 use nosj::emit::{self, copy_short_raw, EscapeMode};
 use rb_sys::macros::{
     FIX2LONG, FIXNUM_P, FLONUM_P, RARRAY_CONST_PTR, RARRAY_LEN, RB_BUILTIN_TYPE, RHASH_SIZE,
@@ -15,7 +16,7 @@ use super::keys::GenKeyCache;
 use super::opts::GenConfig;
 use super::ruby::{
     is_json_fragment, is_special_const, protected_as_json, protected_encode_utf8,
-    protected_responds_to_json, protected_to_json, protected_to_s, rstring_bytes, str_coderange,
+    protected_to_json, protected_to_json_if_responds, protected_to_s, rstring_bytes, str_coderange,
     str_enc_index, utf8_encindexes, CR_7BIT, CR_VALID, QFALSE, QNIL, QTRUE,
 };
 
@@ -265,13 +266,15 @@ impl Gen<'_> {
             let s = unsafe { rb_sys::rb_sym2str(k) };
             return self.emit_rstring_quoted(s);
         }
-        match protected_to_s(k) {
-            Ok(s) => self.emit_rstring_quoted(s),
-            Err(exc) => {
-                self.fail = Some(GenFail::Reraise(exc));
-                Err(())
-            }
-        }
+        let s = self.reraise(protected_to_s(k))?;
+        self.emit_rstring_quoted(s)
+    }
+
+    /// A protected Ruby call's outcome inside the walk: a raised
+    /// exception becomes this walk's failure, re-raised unchanged once
+    /// the walk has unwound.
+    fn reraise<T>(&mut self, r: Result<T, Error>) -> Result<T, ()> {
+        r.map_err(|exc| self.fail = Some(GenFail::Reraise(exc)))
     }
 
     /// Non-native type: strict raises (except `JSON::Fragment`, which
@@ -285,7 +288,7 @@ impl Gen<'_> {
             return self.emit_rails_fallback::<PRETTY>(raw, depth);
         }
         if self.cfg.strict {
-            if self.is_fragment(raw)? {
+            if self.reraise(is_json_fragment(raw))? {
                 return self.splice_to_json(raw);
             }
             let name = unsafe {
@@ -296,68 +299,32 @@ impl Gen<'_> {
             self.fail = Some(GenFail::Generator(format!("{name} not allowed in JSON")));
             return Err(());
         }
-        let responds = match protected_responds_to_json(raw) {
-            Ok(responds) => responds,
-            Err(exc) => {
-                self.fail = Some(GenFail::Reraise(exc));
-                return Err(());
-            }
-        };
-        if responds {
-            match protected_to_json(raw) {
-                Ok(json) => {
-                    if !is_special_const(json)
-                        && unsafe { RB_BUILTIN_TYPE(json) } == ruby_value_type::RUBY_T_STRING
-                    {
-                        self.append_rstring_raw(json);
-                        return Ok(());
-                    }
-                }
-                Err(exc) => {
-                    self.fail = Some(GenFail::Reraise(exc));
-                    return Err(());
-                }
+        if let Some(json) = self.reraise(protected_to_json_if_responds(raw))? {
+            if !is_special_const(json)
+                && unsafe { RB_BUILTIN_TYPE(json) } == ruby_value_type::RUBY_T_STRING
+            {
+                self.append_rstring_raw(json);
+                return Ok(());
             }
         }
-        match protected_to_s(raw) {
-            Ok(s) => self.emit_rstring_quoted(s),
-            Err(exc) => {
-                self.fail = Some(GenFail::Reraise(exc));
-                Err(())
-            }
-        }
-    }
-
-    /// Whether `raw` is a `JSON::Fragment`; a raise from resolving the
-    /// class (an autoload) becomes this walk's failure.
-    fn is_fragment(&mut self, raw: VALUE) -> Result<bool, ()> {
-        is_json_fragment(raw).map_err(|exc| {
-            self.fail = Some(GenFail::Reraise(exc));
-        })
+        let s = self.reraise(protected_to_s(raw))?;
+        self.emit_rstring_quoted(s)
     }
 
     /// Splice `raw`'s `to_json` result verbatim: the JSON::Fragment
     /// path (pre-rendered JSON, trusted like the gem trusts it).
     fn splice_to_json(&mut self, raw: VALUE) -> Result<(), ()> {
-        match protected_to_json(raw) {
-            Ok(json)
-                if !is_special_const(json)
-                    && unsafe { RB_BUILTIN_TYPE(json) } == ruby_value_type::RUBY_T_STRING =>
-            {
-                self.append_rstring_raw(json);
-                Ok(())
-            }
-            Ok(_) => {
-                self.fail = Some(GenFail::Generator(
-                    "JSON::Fragment#to_json did not return a String".to_string(),
-                ));
-                Err(())
-            }
-            Err(exc) => {
-                self.fail = Some(GenFail::Reraise(exc));
-                Err(())
-            }
+        let json = self.reraise(protected_to_json(raw))?;
+        if is_special_const(json)
+            || unsafe { RB_BUILTIN_TYPE(json) } != ruby_value_type::RUBY_T_STRING
+        {
+            self.fail = Some(GenFail::Generator(
+                "JSON::Fragment#to_json did not return a String".to_string(),
+            ));
+            return Err(());
         }
+        self.append_rstring_raw(json);
+        Ok(())
     }
 
     /// Rails-mode fallback, mirroring JSONGemEncoder#jsonify:
@@ -371,27 +338,22 @@ impl Gen<'_> {
         raw: VALUE,
         depth: usize,
     ) -> Result<(), ()> {
-        if self.is_fragment(raw)? {
+        if self.reraise(is_json_fragment(raw))? {
             return self.splice_to_json(raw);
         }
-        match protected_as_json(raw) {
-            Ok(json) if json == raw => {
-                let name = unsafe {
-                    std::ffi::CStr::from_ptr(rb_sys::rb_obj_classname(raw))
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                self.fail = Some(GenFail::Generator(format!(
-                    "{name}#as_json returned the receiver"
-                )));
-                Err(())
-            }
-            Ok(json) => self.emit_value::<PRETTY>(json, depth),
-            Err(exc) => {
-                self.fail = Some(GenFail::Reraise(exc));
-                Err(())
-            }
+        let json = self.reraise(protected_as_json(raw))?;
+        if json == raw {
+            let name = unsafe {
+                std::ffi::CStr::from_ptr(rb_sys::rb_obj_classname(raw))
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            self.fail = Some(GenFail::Generator(format!(
+                "{name}#as_json returned the receiver"
+            )));
+            return Err(());
         }
+        self.emit_value::<PRETTY>(json, depth)
     }
 
     fn nesting_check(&mut self, inner: usize) -> Result<(), ()> {
@@ -412,14 +374,16 @@ impl Gen<'_> {
         }
         let mut i = 0usize;
         loop {
-            // Re-read the length every element, like the json gem: a
-            // user callback inside the recursion (to_json, to_s,
-            // as_json) may shrink the array, and slots past the live
-            // length hold freed or reused VALUEs. Growth is emitted.
+            // Length and pointer are re-read every element, like the
+            // json gem: a user callback inside the recursion (to_json,
+            // to_s, as_json) may shrink the array (slots past the live
+            // length hold freed or reused VALUEs; growth is emitted),
+            // and any allocation may compact it elsewhere.
             let len = unsafe { RARRAY_LEN(ary) } as usize;
             if i >= len {
                 break;
             }
+            let elem = unsafe { *RARRAY_CONST_PTR(ary).add(i) };
             if i > 0 {
                 self.out.push(b',');
             }
@@ -427,9 +391,6 @@ impl Gen<'_> {
                 self.out.extend_from_slice(&self.cfg.array_nl);
                 self.push_indent(inner);
             }
-            // Re-read the pointer every element: an allocation inside the
-            // recursion may trigger GC compaction and move the array.
-            let elem = unsafe { *RARRAY_CONST_PTR(ary).add(i) };
             // Numeric runs (compact mode) emit through a raw local
             // cursor under one chunked reservation: per-element Vec
             // operations round-trip length and pointer through memory

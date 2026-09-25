@@ -23,17 +23,19 @@ pub(super) fn protected_to_json(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, to_json_id(), 0) })
 }
 
-/// `v.respond_to?(:to_json)`, protected: `rb_respond_to` dispatches to a
-/// user-defined `respond_to?` / `respond_to_missing?`, which may raise.
-pub(super) fn protected_responds_to_json(v: VALUE) -> Result<bool, Error> {
-    magnus::rb_sys::protect(|| unsafe {
+/// `v.to_json` if `v.respond_to?(:to_json)`, else `None`, under ONE
+/// protect: `rb_respond_to` dispatches to a user-defined `respond_to?` /
+/// `respond_to_missing?`, which may raise just like `to_json` itself.
+pub(super) fn protected_to_json_if_responds(v: VALUE) -> Result<Option<VALUE>, Error> {
+    const QUNDEF: VALUE = ruby_special_consts::RUBY_Qundef as VALUE;
+    let json = magnus::rb_sys::protect(|| unsafe {
         if rb_sys::rb_respond_to(v, to_json_id()) != 0 {
-            QTRUE
+            rb_sys::rb_funcall(v, to_json_id(), 0)
         } else {
-            QFALSE
+            QUNDEF
         }
-    })
-    .map(|r| r == QTRUE)
+    })?;
+    Ok((json != QUNDEF).then_some(json))
 }
 
 /// `v.as_json`, protected. Argument-less on purpose: ActiveSupport's
@@ -65,36 +67,38 @@ pub(crate) fn warm_up() {
 /// lazily and cached only on success, so a json gem loaded after the
 /// first generate is still found; a fragment instance existing implies
 /// its class does. The cached VALUE is a constant of the JSON module,
-/// so it can never be collected. The lookup is protected: resolving
-/// the constant can run an autoload (user code), whose raise
-/// propagates like any constant reference's would.
+/// so it can never be collected.
 pub(super) fn is_json_fragment(v: VALUE) -> Result<bool, Error> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static FRAGMENT: AtomicUsize = AtomicUsize::new(0);
-    let mut cls = FRAGMENT.load(Ordering::Relaxed);
+    let mut cls = FRAGMENT.load(Ordering::Relaxed) as VALUE;
     if cls == 0 {
-        cls = magnus::rb_sys::protect(|| resolve_json_fragment() as VALUE)? as usize;
+        cls = resolve_json_fragment()?;
         if cls == 0 {
             return Ok(false);
         }
-        FRAGMENT.store(cls, Ordering::Relaxed);
+        FRAGMENT.store(cls as usize, Ordering::Relaxed);
     }
-    Ok(unsafe { rb_sys::rb_obj_is_kind_of(v, cls as VALUE) != QFALSE })
+    Ok(unsafe { rb_sys::rb_obj_is_kind_of(v, cls) != QFALSE })
 }
 
-fn resolve_json_fragment() -> usize {
+/// `JSON::Fragment`, or 0 while undefined. Only the `rb_const_get`s are
+/// protected: fetching a constant can run its pending autoload (user
+/// code, whose raise propagates as any constant reference's would),
+/// while `rb_const_defined` never loads anything.
+fn resolve_json_fragment() -> Result<VALUE, Error> {
     unsafe {
         let object = rb_sys::rb_cObject;
         let json_id = rb_sys::rb_intern(c"JSON".as_ptr());
         if rb_sys::rb_const_defined(object, json_id) == 0 {
-            return 0;
+            return Ok(0);
         }
-        let json = rb_sys::rb_const_get(object, json_id);
+        let json = magnus::rb_sys::protect(|| rb_sys::rb_const_get(object, json_id))?;
         let fragment_id = rb_sys::rb_intern(c"Fragment".as_ptr());
         if rb_sys::rb_const_defined(json, fragment_id) == 0 {
-            return 0;
+            return Ok(0);
         }
-        rb_sys::rb_const_get(json, fragment_id) as usize
+        magnus::rb_sys::protect(|| rb_sys::rb_const_get(json, fragment_id))
     }
 }
 
@@ -110,7 +114,7 @@ pub(super) fn protected_encode_utf8(v: VALUE) -> Result<VALUE, Error> {
 }
 
 /// Interned `to_json` method ID, resolved once per process.
-pub(super) fn to_json_id() -> rb_sys::ID {
+fn to_json_id() -> rb_sys::ID {
     static TO_JSON: OnceLock<usize> = OnceLock::new();
     *TO_JSON.get_or_init(|| unsafe { rb_sys::rb_intern(c"to_json".as_ptr()) } as usize)
         as rb_sys::ID
