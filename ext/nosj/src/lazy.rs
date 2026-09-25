@@ -101,6 +101,13 @@ impl LazyNode {
     fn span(&self) -> &[u8] {
         &self.doc.bytes()[self.start..self.end]
     }
+
+    /// A Reader over this node's span, walking the grammar the document
+    /// was opened with (trailing commas, NaN keywords).
+    fn reader<'a, 'b>(&'a self, bufs: &'b mut nosj::Buffers) -> nosj::Reader<'a, 'b> {
+        // SAFETY: spans are valid UTF-8 (see resolve_in_span).
+        unsafe { nosj::Reader::from_utf8_unchecked_with(self.span(), bufs, self.doc.opts.popts) }
+    }
 }
 
 /// Wrap a resolved raw-value slice: containers become new lazy nodes,
@@ -131,7 +138,14 @@ fn resolve_in_span(ruby: &Ruby, node: &LazyNode, pointer: &str) -> Result<Value,
         let mut state = cell.borrow_mut();
         // SAFETY: doc bytes were coderange-gated at NOSJ.lazy creation,
         // and spans lie on token edges, so the span is valid UTF-8.
-        unsafe { nosj::pointer_utf8_unchecked(node.span(), pointer, &mut state.bufs) }
+        unsafe {
+            nosj::pointer_utf8_unchecked_with(
+                node.span(),
+                pointer,
+                &mut state.bufs,
+                node.doc.opts.popts,
+            )
+        }
     });
     match resolved {
         Ok(None) => Ok(ruby.qnil().as_value()),
@@ -290,8 +304,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
     let out = ruby.ary_new();
     PULL_STATE.with(|cell| -> Result<(), Error> {
         let mut state = cell.borrow_mut();
-        // SAFETY: spans are valid UTF-8 (see resolve_in_span).
-        let mut r = unsafe { nosj::Reader::from_utf8_unchecked(rb_self.span(), &mut state.bufs) };
+        let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut has = match r
             .object_first_key()
@@ -326,8 +339,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
 pub fn lazy_size(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<usize, Error> {
     PULL_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // SAFETY: spans are valid UTF-8 (see resolve_in_span).
-        let mut r = unsafe { nosj::Reader::from_utf8_unchecked(rb_self.span(), &mut state.bufs) };
+        let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut n = 0usize;
         if rb_self.kind == KIND_OBJECT {
@@ -372,8 +384,7 @@ pub fn lazy_children(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Erro
     let base = rb_self.doc.bytes().as_ptr() as usize;
     let descs: Result<Vec<ChildDesc>, nosj::ParseError> = PULL_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // SAFETY: spans are valid UTF-8 (see resolve_in_span).
-        let mut r = unsafe { nosj::Reader::from_utf8_unchecked(rb_self.span(), &mut state.bufs) };
+        let mut r = rb_self.reader(&mut state.bufs);
         r.next_node()?;
         let mut out = Vec::new();
         if rb_self.kind == KIND_OBJECT {

@@ -1,3 +1,14 @@
+## [Unreleased]
+
+- Fixed: lazy documents opened with `allow_trailing_comma: true` or
+  `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
+  any lookup that missed or stepped over a trailing comma or a `NaN`
+  raised `NOSJ::ParserError`, even though `value` worked.
+- `NOSJ.at_pointer`, `NOSJ.at_pointers`, and `NOSJ.at_pointer_file`
+  now honor `allow_nan` and `allow_trailing_comma` while resolving the
+  pointer, not only when materializing the matched value.
+- Updated the nosj crate to 0.2.2.
+
 ## [0.4.0] - 2026-09-05
 
 - Ractors: on Ruby 4.0+, `NOSJ.parse`, `NOSJ.generate`, and every

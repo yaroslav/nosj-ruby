@@ -24,7 +24,7 @@ fn at_pointer_impl(
     let resolved = PULL_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Safety: coderange verified above.
-        unsafe { nosj::pointer_utf8_unchecked(input, pointer, &mut state.bufs) }
+        unsafe { nosj::pointer_utf8_unchecked_with(input, pointer, &mut state.bufs, o.popts) }
     });
     match resolved {
         Ok(None) => Ok(ruby.qnil().as_value()),
@@ -130,7 +130,7 @@ fn at_pointers_impl(
     let resolved = PULL_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Safety: coderange verified by utf8_input.
-        unsafe { nosj::pointers_utf8_unchecked(input, &live, &mut state.bufs) }
+        unsafe { nosj::pointers_utf8_unchecked_with(input, &live, &mut state.bufs, o.popts) }
     });
     let mut hits = match resolved {
         Ok(hits) => hits.into_iter(),

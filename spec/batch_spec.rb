@@ -83,6 +83,20 @@ RSpec.describe "NOSJ.at_pointers / NOSJ.dig_many" do
       expect(value["name"]).to be_frozen
     end
 
+    it "resolves under the grammar options, not just materializes" do
+      trailing = '{"a": [1, 2,], "b": 3,}'
+      expect(NOSJ.at_pointer(trailing, "/zz", allow_trailing_comma: true)).to be_nil
+      expect(NOSJ.at_pointer(trailing, "/a/2", allow_trailing_comma: true)).to be_nil
+      expect(NOSJ.at_pointers(trailing, ["/b", "/a", "/zz"], allow_trailing_comma: true))
+        .to eq([3, [1, 2], nil])
+      expect { NOSJ.at_pointer(trailing, "/zz") }.to raise_error(NOSJ::ParserError)
+
+      nan = '{"a": NaN, "b": [-Infinity], "c": 1}'
+      expect(NOSJ.at_pointer(nan, "/c", allow_nan: true)).to eq(1)
+      expect(NOSJ.at_pointers(nan, ["/c", "/b/0"], allow_nan: true)).to eq([1, -Float::INFINITY])
+      expect { NOSJ.at_pointer(nan, "/c") }.to raise_error(NOSJ::ParserError)
+    end
+
     it "still rejects unsupported options" do
       expect { NOSJ.at_pointer(doc, "/count", create_additions: true) }.to raise_error(ArgumentError)
     end
