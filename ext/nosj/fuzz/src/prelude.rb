@@ -166,16 +166,11 @@ module NOSJFuzz
     doc = utf8(doc_bytes)
     spec_status, spec = try_parse(utf8(spec_bytes))
     return unless spec_status == :ok
-    # Replacement values with broken encoding (lone surrogates) raise
-    # GeneratorError on insertion; the reference cannot mirror that.
-    return unless deep_valid_encoding?(spec)
 
+    # Parsing refuses duplicate keys (raw-byte resolution would see the
+    # first occurrence, the tree the last) and lone surrogates, so an
+    # accepted tree and spec are free of both.
     tree_status, tree = try_parse(doc)
-    # Duplicate keys: raw-byte resolution sees the first occurrence,
-    # tree materialization keeps the last; the two sides cannot agree.
-    if tree_status == :ok && NOSJ.stats_native(doc, nil)[:keys] != count_keys(tree)
-      return
-    end
 
     case spec
     when Hash
@@ -376,23 +371,6 @@ module NOSJFuzz
     when Hash then v.transform_values { |e| deep_dup(e) }
     when Array then v.map { |e| deep_dup(e) }
     else v
-    end
-  end
-
-  def deep_valid_encoding?(v)
-    case v
-    when String then v.valid_encoding?
-    when Array then v.all? { |e| deep_valid_encoding?(e) }
-    when Hash then v.all? { |k, e| deep_valid_encoding?(k) && deep_valid_encoding?(e) }
-    else true
-    end
-  end
-
-  def count_keys(v)
-    case v
-    when Hash then v.size + v.sum { |_, e| count_keys(e) }
-    when Array then v.sum { |e| count_keys(e) }
-    else 0
     end
   end
 end
