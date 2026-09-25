@@ -35,21 +35,21 @@ pub(crate) enum SinkAbort {
     NonFiniteFloat(&'static str),
 }
 
-/// Integer VALUE for `i`: a Fixnum tagged inline when it fits (rb-sys's
-/// `FIXABLE`/`LONG2FIX`, the header macros' semantics through its inline
-/// versioned stable API), else a Bignum via `rb_ll2inum`. The fixable
+/// Integer VALUE for `i` via rb-sys's inline `LONG2NUM` (the header
+/// macro: a Fixnum tagged inline when it fits, else a Bignum), which
+/// saves the FFI call per integer that `rb_ll2inum` costs. The fixable
 /// range is defined by the C `long`, which is 32-bit on Windows (LLP64):
 /// fixnums there hold only 31 bits, and tagging anything wider crashes
-/// Ruby with "Unnormalized Fixnum value". Inline tagging saves the FFI
-/// call per integer that `rb_ll2inum` costs.
+/// Ruby with "Unnormalized Fixnum value"; values beyond `long` take
+/// `rb_ll2inum`.
 // The conversion is an identity on LP64 hosts (clippy flags it there)
 // but narrows on Windows, where c_long is 32-bit.
 #[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
 #[inline(always)]
 fn int_to_raw(i: i64) -> rb_sys::VALUE {
     match std::os::raw::c_long::try_from(i) {
-        Ok(l) if rb_sys::macros::FIXABLE(l) => unsafe { rb_sys::macros::LONG2FIX(l) },
-        _ => unsafe { rb_sys::rb_ll2inum(i) },
+        Ok(l) => rb_sys::macros::LONG2NUM(l),
+        Err(_) => unsafe { rb_sys::rb_ll2inum(i) },
     }
 }
 

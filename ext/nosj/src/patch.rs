@@ -404,8 +404,7 @@ pub fn splice_native(
         Err(e) => return Err(parser_error_at(ruby, input, e.offset, e.to_string())),
     };
 
-    // (target start, target end, rendered range) per edit.
-    let mut spans: Vec<(usize, usize, (usize, usize))> = Vec::with_capacity(pointers.len());
+    let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(pointers.len());
     for (i, hit) in hits.into_iter().enumerate() {
         let Some(slice) = hit else {
             let exc: ExceptionClass = ruby.exception_key_error();
@@ -415,7 +414,7 @@ pub fn splice_native(
             ));
         };
         let (s, e) = span_of(input, slice.as_bytes());
-        spans.push((s, e, ranges[i]));
+        spans.push((s, e, i));
     }
     spans.sort_unstable_by_key(|&(s, _, _)| s);
     for pair in spans.windows(2) {
@@ -429,7 +428,8 @@ pub fn splice_native(
 
     let mut out = Vec::with_capacity(input.len() + rendered.len());
     let mut pos = 0;
-    for &(s, e, (rs, re)) in &spans {
+    for &(s, e, edit) in &spans {
+        let (rs, re) = ranges[edit];
         out.extend_from_slice(&input[pos..s]);
         out.extend_from_slice(&rendered[rs..re]);
         pos = e;

@@ -33,7 +33,7 @@ use crate::state::with_pull_state;
 /// copied once.
 pub(crate) enum DocBytes {
     Owned(Vec<u8>),
-    Frozen(rb_sys::VALUE),
+    Frozen(RString),
     /// A read-only file mapping (`NOSJ.load_lazy_file`): pages never
     /// touched are never read off disk. Concurrent modification of the
     /// mapped file by another process is documented as unsupported
@@ -63,14 +63,9 @@ impl DocInner {
     fn bytes(&self) -> &[u8] {
         match &self.bytes {
             DocBytes::Owned(v) => v,
-            // SAFETY: a live T_STRING (kept alive and pinned by every
+            // SAFETY: a live string (kept alive and pinned by every
             // node's GC mark), read fresh on each call; see DocBytes.
-            DocBytes::Frozen(source) => unsafe {
-                std::slice::from_raw_parts(
-                    rb_sys::macros::RSTRING_PTR(*source).cast::<u8>(),
-                    rb_sys::macros::RSTRING_LEN(*source) as usize,
-                )
-            },
+            DocBytes::Frozen(source) => unsafe { source.as_slice() },
             DocBytes::Mmap(m) => m,
         }
     }
@@ -102,11 +97,10 @@ pub struct LazyNode {
 
 impl DataTypeFunctions for LazyNode {
     fn mark(&self, marker: &magnus::gc::Marker) {
+        // The source was a live, frozen string at node creation, and
+        // this mark is what keeps it that way.
         if let DocBytes::Frozen(source) = self.doc.bytes {
-            use magnus::rb_sys::FromRawValue;
-            // SAFETY: the VALUE was a live, frozen string at node
-            // creation and this mark is what keeps it that way.
-            marker.mark(unsafe { Value::from_raw(source) });
+            marker.mark(source);
         }
     }
 }
@@ -192,8 +186,7 @@ pub fn lazy_native(
     // on the caller's machine stack, so it stays pinned through this
     // call, and the node's mark takes over from the first GC on.
     let bytes = if data.as_value().is_frozen() {
-        use magnus::rb_sys::AsRawValue;
-        DocBytes::Frozen(data.as_raw())
+        DocBytes::Frozen(data)
     } else {
         DocBytes::Owned(input.to_vec())
     };
