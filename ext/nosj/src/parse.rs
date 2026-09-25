@@ -101,8 +101,6 @@ pub(crate) fn options_hash(ruby: &Ruby, opts: Value) -> Result<Option<magnus::RH
 /// on_load, create_additions, allow_comments, allow_control_characters,
 /// allow_invalid_escape) raise unless falsy.
 pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Error> {
-    use magnus::value::ReprValue;
-
     let mut out = ParseNativeOpts {
         symbolize: r.truthy(Opt::SymbolizeNames),
         freeze: r.truthy(Opt::Freeze),
@@ -113,16 +111,7 @@ pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Erro
     out.popts.allow_trailing_comma = r.truthy(Opt::AllowTrailingComma);
 
     if let Some(mn) = r.get(Opt::MaxNesting) {
-        out.max_nesting =
-            if mn.is_nil() || mn.to_bool() && magnus::Integer::from_value(mn).is_none() {
-                MAX_NESTING // nil / true: gem default
-            } else if !mn.to_bool() {
-                usize::MAX // false: unlimited
-            } else {
-                magnus::Integer::from_value(mn)
-                    .and_then(|i| i.to_u64().ok())
-                    .map_or(MAX_NESTING, |n| n as usize)
-            };
+        out.max_nesting = max_nesting_of(mn);
     }
 
     r.tolerate(&[
@@ -136,6 +125,21 @@ pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Erro
         Opt::AllowInvalidEscape,
     ]);
     Ok(out)
+}
+
+/// A given `max_nesting` value as a limit: nil or true keep the gem's
+/// default, false is unlimited, an Integer is the limit.
+pub(crate) fn max_nesting_of(value: Value) -> usize {
+    use magnus::value::ReprValue;
+    if value.is_nil() || value.to_bool() && magnus::Integer::from_value(value).is_none() {
+        MAX_NESTING
+    } else if !value.to_bool() {
+        usize::MAX
+    } else {
+        magnus::Integer::from_value(value)
+            .and_then(|i| i.to_u64().ok())
+            .map_or(MAX_NESTING, |n| n as usize)
+    }
 }
 
 pub(crate) type DriveResult = Result<(), nosj::DriveError<SinkAbort>>;

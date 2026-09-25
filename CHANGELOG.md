@@ -34,7 +34,8 @@ before:
   `allow_invalid_escape`, `sort_keys`, `as_json`) raise unless falsy;
   `on_load` and the newer ones used to be silently ignored.
   `escape_slash` is gone, as in json 3: use `script_safe`.
-  `quirks_mode` is no longer accepted.
+  `quirks_mode` is no longer accepted. `stats` takes only the options
+  it documents (`max_nesting`, `allow_nan`, `allow_trailing_comma`).
 
 The `nosj/json` drop-in follows the installed json gem:
 
