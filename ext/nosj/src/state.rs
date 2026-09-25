@@ -10,7 +10,7 @@ use ahash::AHashMap;
 use magnus::typed_data::Obj;
 use magnus::{DataTypeFunctions, TypedData};
 use nosj::Buffers;
-use std::cell::RefCell;
+use std::cell::Cell;
 
 /// Everything a parse touches, allocated once per thread and reused:
 /// nosj's scratch buffers, the interned-key caches, and the GC-marked
@@ -29,14 +29,36 @@ pub(crate) struct PullState {
     pub(crate) key_shadow: Option<&'static mut VStackShadow>,
 }
 
+impl PullState {
+    fn fresh() -> Box<Self> {
+        Box::new(PullState {
+            bufs: Buffers::new(),
+            keys: AHashMap::with_capacity(256),
+            sym_keys: AHashMap::new(),
+            vstack: None,
+            key_shadow: None,
+        })
+    }
+}
+
 thread_local! {
-    pub(crate) static PULL_STATE: RefCell<PullState> = RefCell::new(PullState {
-        bufs: Buffers::new(),
-        keys: AHashMap::with_capacity(256),
-        sym_keys: AHashMap::new(),
-        vstack: None,
-        key_shadow: None,
-    });
+    static PULL_STATE: Cell<Option<Box<PullState>>> = const { Cell::new(None) };
+}
+
+/// Run `f` on this thread's parse state, taken OUT of the thread-local
+/// for the call and stored back afterwards (the generate scratch's
+/// pattern, gen/mod.rs). Parses allocate Ruby objects, and a failed
+/// allocation raises NoMemoryError, which longjmps over these frames: a
+/// RefCell borrow held across it stayed borrowed for good, and the next
+/// parse on the thread panicked, aborting the process under
+/// panic=abort. Here a lost state is merely leaked (its shadows keep
+/// their last VALUEs alive) and the next call starts a fresh one; an
+/// empty cell likewise serves a nested call.
+pub(crate) fn with_pull_state<R>(f: impl FnOnce(&mut PullState) -> R) -> R {
+    let mut state = PULL_STATE.with(Cell::take).unwrap_or_else(PullState::fresh);
+    let result = f(&mut state);
+    PULL_STATE.with(|cell| cell.set(Some(state)));
+    result
 }
 
 /// GC-marked holder for pending VALUEs.

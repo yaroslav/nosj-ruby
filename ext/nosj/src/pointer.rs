@@ -7,7 +7,7 @@ use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::parser_error_at;
 use crate::parse::{materialize_at, parse_native_opts, span_of, utf8_input, ParseNativeOpts};
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 /// Resolve one JSON Pointer against `data`, materializing the matched
 /// subtree; `nil` when the pointer misses.
@@ -21,8 +21,7 @@ fn at_pointer_impl(
     let input = utf8_input(ruby, &data)?;
     // Resolve first (one PULL_STATE borrow), then materialize (a fresh
     // borrow); the resolved slice borrows `input`, not the buffers.
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // Safety: coderange verified above.
         unsafe { nosj::pointer_utf8_unchecked_with(input, pointer, &mut state.bufs, o.popts) }
     });
@@ -127,8 +126,7 @@ fn at_pointers_impl(
 
     // Resolve first (one PULL_STATE borrow); the resolved slices borrow
     // `input`, not the buffers, so materializing can re-borrow freely.
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // Safety: coderange verified by utf8_input.
         unsafe { nosj::pointers_utf8_unchecked_with(input, &live, &mut state.bufs, o.popts) }
     });

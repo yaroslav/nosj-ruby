@@ -12,7 +12,7 @@ use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
 use crate::parse::{parse_native_opts, utf8_input};
 use crate::sink::SinkAbort;
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 /// What the document's root value was; reported as a Symbol. The
 /// Default is never observable (a successful pass always saw a root
@@ -256,8 +256,7 @@ fn stats_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<Value, Error> {
         },
         ..StatsSink::default()
     };
-    let result = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let result = with_pull_state(|state| {
         // Safety: callers verified UTF-8 (coderange or a full scan).
         unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
     });

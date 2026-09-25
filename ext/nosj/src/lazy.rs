@@ -20,7 +20,7 @@ use magnus::{DataTypeFunctions, Error, RArray, RString, Ruby, TypedData, Value};
 use crate::errors::parser_error_at;
 use crate::parse::{materialize_at, parse_native_opts, span_of, utf8_input, ParseNativeOpts};
 use crate::pointer::{path_to_pointer, push_escaped_token};
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 /// The document bytes behind a node tree. A frozen Ruby source is
 /// borrowed zero-copy: freezing rules out any change to its CONTENT,
@@ -140,8 +140,7 @@ fn resolved_to_value(ruby: &Ruby, doc: &Arc<DocInner>, sub: &[u8]) -> Result<Val
 fn resolve_in_span(ruby: &Ruby, node: &LazyNode, pointer: &str) -> Result<Value, Error> {
     // Resolve first (one PULL_STATE borrow, slice borrows the doc, not
     // the buffers), then materialize (which re-borrows internally).
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // SAFETY: doc bytes were coderange-gated at NOSJ.lazy creation,
         // and spans lie on token edges, so the span is valid UTF-8.
         unsafe {
@@ -304,8 +303,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
         ));
     }
     let out = ruby.ary_new();
-    PULL_STATE.with(|cell| -> Result<(), Error> {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| -> Result<(), Error> {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut has = match r
@@ -339,8 +337,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
 /// `__size`: entry count (object pairs or array elements), one walk,
 /// nothing materialized.
 pub fn lazy_size(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<usize, Error> {
-    PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut n = 0usize;
@@ -384,8 +381,7 @@ struct ChildDesc {
 /// before materialization re-borrows the thread state.
 pub fn lazy_children(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
     let base = rb_self.doc.bytes().as_ptr() as usize;
-    let descs: Result<Vec<ChildDesc>, nosj::ParseError> = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let descs: Result<Vec<ChildDesc>, nosj::ParseError> = with_pull_state(|state| {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node()?;
         let mut out = Vec::new();

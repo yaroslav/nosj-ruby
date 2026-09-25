@@ -22,7 +22,7 @@ use crate::gen;
 use crate::lazy::{self, DocBytes};
 use crate::parse::{err, materialize, materialize_at, parse_native_opts, span_of, ParseNativeOpts};
 use crate::pointer::path_to_pointer;
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 const NOT_UTF8: &str = "input is not valid UTF-8";
 
@@ -198,8 +198,7 @@ fn resolve_file_pointer(
     o: &ParseNativeOpts,
 ) -> Result<Value, Error> {
     with_mapped_file(ruby, path, |map| {
-        let resolved = PULL_STATE.with(|cell| {
-            let mut state = cell.borrow_mut();
+        let resolved = with_pull_state(|state| {
             // SAFETY: UTF-8 checked by with_mapped_file.
             unsafe { nosj::pointer_utf8_unchecked_with(&map, pointer, &mut state.bufs, o.popts) }
         });

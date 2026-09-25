@@ -27,6 +27,9 @@
   loading during a strict or Rails-mode generate.
 - The same leak in `NOSJ.write_file` when constructing the `Errno`
   exception for a failed write raised.
+- Fixed: after a `NoMemoryError` in the middle of a parse (or
+  `minify`/`reformat`), the next call on that thread aborted the whole
+  process. Per-thread parser state is now recovered instead.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

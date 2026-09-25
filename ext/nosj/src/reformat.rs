@@ -13,7 +13,7 @@
 //! canonical spelling (`1.50` becomes `1.5`), and string escapes are
 //! normalized by the emission kernels.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use magnus::value::ReprValue;
 use magnus::{Error, RString, Ruby, Value};
@@ -26,13 +26,12 @@ use crate::gen::opts::{parse_gen_opts, GenConfig, DEFAULT_CONFIG};
 use crate::parse::{parse_native_opts, utf8_input};
 use crate::patch::finish_string;
 use crate::sink::SinkAbort;
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 thread_local! {
-    /// Pooled output buffer: capacity survives across calls. The pipe
-    /// never calls back into Ruby, so the borrow spans the whole drive
-    /// without any reentrancy concern.
-    static PIPE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Pooled output buffer: capacity survives across calls. Taken out
+    /// for each call (see [`reformat_over`]).
+    static PIPE_BUF: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
 /// The event-to-Writer pipe. Structure events forward to the Writer's
@@ -242,50 +241,51 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<RString, Erro
     };
     let wopts = write_options(gcfg);
 
-    PIPE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.clear();
-        // The output is at least input-sized for minify-shaped runs.
-        buf.reserve(input.len());
-        let mut sink = PipeSink {
-            w: Writer::new(&mut buf, &wopts),
-            depth: 0,
-            max_nesting: po.max_nesting,
-            mode: gcfg.mode,
-            allow_nan: gcfg.allow_nan,
-        };
-        let result = PULL_STATE.with(|state_cell| {
-            let mut state = state_cell.borrow_mut();
-            // Safety: callers verified UTF-8 (coderange or full scan).
-            unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts) }
-        });
-        match result {
-            Ok(()) => finish_string(&buf),
-            Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-                ruby,
-                format!(
-                    "nesting of {} is too deep",
-                    po.max_nesting.saturating_add(1)
-                ),
-            )),
-            Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(Error::new(
-                // Gem parity: generate raises GeneratorError for a
-                // string ascii_only cannot represent.
-                nosj_exception(ruby, "GeneratorError"),
-                "source sequence is illegal/malformed utf-8",
-            )),
-            Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(Error::new(
-                nosj_exception(ruby, "GeneratorError"),
-                format!("{spelling} not allowed in JSON"),
-            )),
-            Err(nosj::DriveError::Sink(_)) => {
-                Err(parser_error(ruby, "reformat pass aborted".into()))
-            }
-            Err(nosj::DriveError::Parse(e)) => {
-                Err(parser_error_at(ruby, input, e.offset, e.to_string()))
-            }
+    // Taken out of the thread-local for the call, not borrowed: the
+    // result String and the exceptions below allocate, and a
+    // NoMemoryError longjmp over a held RefCell borrow would leave it
+    // borrowed for good (see state::with_pull_state).
+    let mut buf = PIPE_BUF.with(Cell::take);
+    buf.clear();
+    // The output is at least input-sized for minify-shaped runs.
+    buf.reserve(input.len());
+    let mut sink = PipeSink {
+        w: Writer::new(&mut buf, &wopts),
+        depth: 0,
+        max_nesting: po.max_nesting,
+        mode: gcfg.mode,
+        allow_nan: gcfg.allow_nan,
+    };
+    let result = with_pull_state(|state| {
+        // Safety: callers verified UTF-8 (coderange or full scan).
+        unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts) }
+    });
+    let out = match result {
+        Ok(()) => finish_string(&buf),
+        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
+            ruby,
+            format!(
+                "nesting of {} is too deep",
+                po.max_nesting.saturating_add(1)
+            ),
+        )),
+        Err(nosj::DriveError::Sink(SinkAbort::BrokenUtf8Output)) => Err(Error::new(
+            // Gem parity: generate raises GeneratorError for a
+            // string ascii_only cannot represent.
+            nosj_exception(ruby, "GeneratorError"),
+            "source sequence is illegal/malformed utf-8",
+        )),
+        Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(Error::new(
+            nosj_exception(ruby, "GeneratorError"),
+            format!("{spelling} not allowed in JSON"),
+        )),
+        Err(nosj::DriveError::Sink(_)) => Err(parser_error(ruby, "reformat pass aborted".into())),
+        Err(nosj::DriveError::Parse(e)) => {
+            Err(parser_error_at(ruby, input, e.offset, e.to_string()))
         }
-    })
+    };
+    PIPE_BUF.with(|cell| cell.set(buf));
+    out
 }
 
 /// `NOSJ.reformat_native(source, opts)`: minify and reformat share

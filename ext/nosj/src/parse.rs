@@ -8,7 +8,7 @@ use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::sink::{NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
-use crate::state::{ensure_marked_shadow, PullState, PULL_STATE};
+use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
 
 pub(crate) use crate::errors::parser_error as err;
 
@@ -178,8 +178,7 @@ pub(crate) fn materialize_at(
     end: usize,
     o: &ParseNativeOpts,
 ) -> Result<Value, Error> {
-    PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| {
         ensure_marked_shadow(&mut state.vstack);
         ensure_marked_shadow(&mut state.key_shadow);
 
@@ -190,7 +189,7 @@ pub(crate) fn materialize_at(
             vstack,
             key_shadow,
             ..
-        } = &mut *state;
+        } = state;
         let stack = &mut vstack.as_mut().unwrap().values;
         stack.clear();
 
@@ -238,8 +237,7 @@ pub fn valid_native(
     let Ok(input) = utf8_input(ruby, &data) else {
         return Ok(false);
     };
-    let ok = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let ok = with_pull_state(|state| {
         let mut sink = NullSink {
             depth: 0,
             max_nesting: o.max_nesting,

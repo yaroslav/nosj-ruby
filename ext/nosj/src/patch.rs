@@ -16,7 +16,7 @@ use magnus::{Error, ExceptionClass, RArray, RHash, RString, Ruby, Value};
 use crate::errors::{nosj_exception, parser_error_at};
 use crate::gen::{self, opts::GenConfig};
 use crate::parse::{materialize_at, span_of, utf8_input, ParseNativeOpts};
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 const WS: [u8; 4] = *b" \t\n\r";
 
@@ -46,8 +46,7 @@ fn gen_config<'a>(
 /// Parse failures raise the rich ParserError (absolute positions);
 /// pointer syntax errors raise ArgumentError, like `at_pointer`.
 fn span_at(ruby: &Ruby, doc: &[u8], pointer: &str) -> Result<Option<(usize, usize)>, Error> {
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // SAFETY: every entry validated the document bytes as UTF-8.
         unsafe { nosj::pointer_utf8_unchecked(doc, pointer, &mut state.bufs) }
     });
@@ -82,8 +81,7 @@ fn container_children(
 ) -> Result<(u8, Vec<ChildSpan>), Error> {
     let span = &doc[start..end];
     let kind = span.first().copied().unwrap_or(0);
-    let walk: Result<Vec<ChildSpan>, nosj::ParseError> = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let walk: Result<Vec<ChildSpan>, nosj::ParseError> = with_pull_state(|state| {
         // SAFETY: doc validated UTF-8 by the entry; spans lie on token
         // edges.
         let mut r = unsafe { nosj::Reader::from_utf8_unchecked(span, &mut state.bufs) };
@@ -394,8 +392,7 @@ pub fn splice_native(
 
     let input = utf8_input(ruby, &data)?;
     let refs: Vec<&str> = pointers.iter().map(String::as_str).collect();
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // SAFETY: coderange verified by utf8_input.
         unsafe { nosj::pointers_utf8_unchecked(input, &refs, &mut state.bufs) }
     });
