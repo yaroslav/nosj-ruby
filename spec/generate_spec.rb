@@ -123,13 +123,17 @@ RSpec.describe "NOSJ.generate" do
     # had another kind triggers the check (keys of one kind cannot
     # collide), which then compares every key's to_s.
     it "raises the gem's GeneratorError for mixed-kind collisions" do
-      {
-        {"a" => 1, :a => 2} => 'detected duplicate key "a" in {"a" => 1, a: 2}',
-        {:b => 1, :a => 2, "a" => 3} => 'detected duplicate key "a" in {b: 1, a: 2, "a" => 3}',
-        {1 => 1, "1" => 2} => 'detected duplicate key "1" in {1 => 1, "1" => 2}',
-        {nil => 1, "" => 2} => 'detected duplicate key "" in {nil => 1, "" => 2}',
-        {"x" => {"c" => 1, :c => 2}} => 'detected duplicate key "c" in {"c" => 1, c: 2}'
-      }.each do |hash, message|
+      inner = {"c" => 1, :c => 2}
+      [
+        [{"a" => 1, :a => 2}, "a"],
+        [{:b => 1, :a => 2, "a" => 3}, "a"],
+        [{1 => 1, "1" => 2}, "1"],
+        [{nil => 1, "" => 2}, ""],
+        [{"x" => inner}, "c", inner]
+      ].each do |hash, key, offender = hash|
+        # json 3 builds the message from #inspect, whose Hash format
+        # changed in Ruby 3.4 ({"a" => 1, a: 2} vs {"a"=>1, :a=>2}).
+        message = "detected duplicate key #{key.inspect} in #{offender.inspect}"
         expect { NOSJ.generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
         expect { NOSJ.pretty_generate(hash) }.to raise_error(NOSJ::GeneratorError, message)
       end
