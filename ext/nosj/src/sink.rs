@@ -35,24 +35,21 @@ pub(crate) enum SinkAbort {
     NonFiniteFloat(&'static str),
 }
 
-/// `RB_INT2FIX` ported from Ruby's public inline headers: fixnums are
-/// `(i << 1) + 1` for `|i| <= LONG_MAX / 2`, and the range is defined by
-/// the C `long`, which is 32-bit on Windows (LLP64): fixnums there hold
-/// only 31 bits, and tagging anything wider crashes Ruby with
-/// "Unnormalized Fixnum value". C extensions get the check inlined by the
-/// header; going through the extern `rb_ll2inum` costs an FFI call per
-/// integer. Non-fixable values still take the call.
-// The widening is an identity on LP64 hosts (clippy flags it there) but
-// required on Windows, where c_long is 32-bit.
-#[allow(clippy::unnecessary_cast)]
+/// Integer VALUE for `i` via rb-sys's inline `LONG2NUM` (the header
+/// macro: a Fixnum tagged inline when it fits, else a Bignum), which
+/// saves the FFI call per integer that `rb_ll2inum` costs. The fixable
+/// range is defined by the C `long`, which is 32-bit on Windows (LLP64):
+/// fixnums there hold only 31 bits, and tagging anything wider crashes
+/// Ruby with "Unnormalized Fixnum value"; values beyond `long` take
+/// `rb_ll2inum`.
+// The conversion is an identity on LP64 hosts (clippy flags it there)
+// but narrows on Windows, where c_long is 32-bit.
+#[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
 #[inline(always)]
 fn int_to_raw(i: i64) -> rb_sys::VALUE {
-    const FIXABLE_MIN: i64 = (std::os::raw::c_long::MIN / 2) as i64;
-    const FIXABLE_MAX: i64 = (std::os::raw::c_long::MAX / 2) as i64;
-    if (FIXABLE_MIN..=FIXABLE_MAX).contains(&i) {
-        ((i as u64) << 1).wrapping_add(1) as rb_sys::VALUE
-    } else {
-        unsafe { rb_sys::rb_ll2inum(i) }
+    match std::os::raw::c_long::try_from(i) {
+        Ok(l) => rb_sys::macros::LONG2NUM(l),
+        Err(_) => unsafe { rb_sys::rb_ll2inum(i) },
     }
 }
 

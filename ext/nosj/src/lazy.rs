@@ -20,20 +20,20 @@ use magnus::{DataTypeFunctions, Error, RArray, RString, Ruby, TypedData, Value};
 use crate::errors::parser_error_at;
 use crate::parse::{materialize_at, parse_native_opts, span_of, utf8_input, ParseNativeOpts};
 use crate::pointer::{path_to_pointer, push_escaped_token};
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 /// The document bytes behind a node tree. A frozen Ruby source is
-/// borrowed zero-copy: freezing rules out mutation, and every node
-/// GC-marks the string with `rb_gc_mark` semantics, which both keeps it
-/// alive and pins it against compaction, so the captured pointer stays
-/// valid for as long as any node exists. Anything else is copied once.
+/// borrowed zero-copy: freezing rules out any change to its CONTENT,
+/// and every node GC-marks the string with `rb_gc_mark` semantics
+/// (alive, and pinned against compaction). Freezing does NOT pin the
+/// buffer, though: deduplicating a frozen String subclass or a string
+/// carrying ivars (`-str`) swaps in an identical shared buffer and
+/// frees the old one. So the bytes are re-read from the string on every
+/// access; same content means every span stays valid. Anything else is
+/// copied once.
 pub(crate) enum DocBytes {
     Owned(Vec<u8>),
-    Frozen {
-        source: rb_sys::VALUE,
-        ptr: *const u8,
-        len: usize,
-    },
+    Frozen(RString),
     /// A read-only file mapping (`NOSJ.load_lazy_file`): pages never
     /// touched are never read off disk. Concurrent modification of the
     /// mapped file by another process is documented as unsupported
@@ -48,23 +48,24 @@ struct DocInner {
     opts: ParseNativeOpts,
 }
 
-// SAFETY: the bytes are immutable for the document's whole life (an
+// SAFETY: the content is immutable for the document's whole life (an
 // owned Vec, or a frozen Ruby string pinned and kept alive by every
-// node's GC mark), so cross-thread reads are plain shared reads; the
-// raw VALUE is only dereferenced by the GC mark, which runs at
-// safepoints (the ShadowHandle contract in state.rs). There is no
-// interior mutability anywhere in the type.
+// node's GC mark), so cross-thread reads are plain shared reads of it.
+// There is no interior mutability anywhere in the type.
 unsafe impl Send for DocInner {}
 unsafe impl Sync for DocInner {}
 
 impl DocInner {
+    /// The document bytes. For a frozen source the slice is valid only
+    /// until the next Ruby call (which could swap the string's buffer;
+    /// see DocBytes): callers finish with it, or call this again,
+    /// before running Ruby code.
     fn bytes(&self) -> &[u8] {
         match &self.bytes {
             DocBytes::Owned(v) => v,
-            // SAFETY: the source string is frozen (no mutation, no
-            // buffer reallocation) and pinned+kept alive by every
-            // node's GC mark; see DocBytes.
-            DocBytes::Frozen { ptr, len, .. } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
+            // SAFETY: a live string (kept alive and pinned by every
+            // node's GC mark), read fresh on each call; see DocBytes.
+            DocBytes::Frozen(source) => unsafe { source.as_slice() },
             DocBytes::Mmap(m) => m,
         }
     }
@@ -77,8 +78,16 @@ const KIND_ARRAY: u8 = b'[';
 /// come from the crate's resolver (token edges within the doc bytes),
 /// and never cross the Ruby boundary, so they cannot be forged from
 /// Ruby.
+///
+/// `wb_protected`: a node's only Ruby reference (a frozen source, in
+/// the shared `DocInner`) is set before the root node is wrapped and
+/// never written again, so there is no write to put a barrier on, and
+/// nodes promote to the old generation instead of being rescanned by
+/// every minor GC (children cache Ruby-side, in barrier-protected
+/// ivars). `free_immediately`: dropping a node calls no Ruby API (it
+/// releases a Vec, an mmap, or nothing).
 #[derive(TypedData)]
-#[magnus(class = "NOSJ::Lazy", mark)]
+#[magnus(class = "NOSJ::Lazy", free_immediately, mark, wb_protected)]
 pub struct LazyNode {
     doc: Arc<DocInner>,
     start: usize,
@@ -88,11 +97,10 @@ pub struct LazyNode {
 
 impl DataTypeFunctions for LazyNode {
     fn mark(&self, marker: &magnus::gc::Marker) {
-        if let DocBytes::Frozen { source, .. } = self.doc.bytes {
-            use magnus::rb_sys::FromRawValue;
-            // SAFETY: the VALUE was a live, frozen string at node
-            // creation and this mark is what keeps it that way.
-            marker.mark(unsafe { Value::from_raw(source) });
+        // The source was a live, frozen string at node creation, and
+        // this mark is what keeps it that way.
+        if let DocBytes::Frozen(source) = self.doc.bytes {
+            marker.mark(source);
         }
     }
 }
@@ -132,10 +140,9 @@ fn resolved_to_value(ruby: &Ruby, doc: &Arc<DocInner>, sub: &[u8]) -> Result<Val
 /// Resolve `pointer` within `node`'s span. Shared by `__get` and
 /// `__at_pointer`; both misses and negative-index paths return nil.
 fn resolve_in_span(ruby: &Ruby, node: &LazyNode, pointer: &str) -> Result<Value, Error> {
-    // Resolve first (one PULL_STATE borrow, slice borrows the doc, not
-    // the buffers), then materialize (which re-borrows internally).
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    // Resolve, then materialize, as two separate uses of the parse
+    // state; the resolved slice borrows the doc, not the state.
+    let resolved = with_pull_state(|state| {
         // SAFETY: doc bytes were coderange-gated at NOSJ.lazy creation,
         // and spans lie on token edges, so the span is valid UTF-8.
         unsafe {
@@ -179,12 +186,7 @@ pub fn lazy_native(
     // on the caller's machine stack, so it stays pinned through this
     // call, and the node's mark takes over from the first GC on.
     let bytes = if data.as_value().is_frozen() {
-        use magnus::rb_sys::AsRawValue;
-        DocBytes::Frozen {
-            source: data.as_raw(),
-            ptr: input.as_ptr(),
-            len: input.len(),
-        }
+        DocBytes::Frozen(data)
     } else {
         DocBytes::Owned(input.to_vec())
     };
@@ -302,8 +304,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
         ));
     }
     let out = ruby.ary_new();
-    PULL_STATE.with(|cell| -> Result<(), Error> {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| -> Result<(), Error> {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut has = match r
@@ -337,8 +338,7 @@ pub fn lazy_keys(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
 /// `__size`: entry count (object pairs or array elements), one walk,
 /// nothing materialized.
 pub fn lazy_size(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<usize, Error> {
-    PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node().map_err(|e| reader_err(ruby, &rb_self, e))?;
         let mut n = 0usize;
@@ -378,12 +378,11 @@ struct ChildDesc {
 
 /// `__children`: every direct child in ONE walk. Objects yield
 /// `[key, child]` pairs, arrays yield children; containers wrap lazily,
-/// scalars materialize. Two phases so the Reader's buffer borrow ends
-/// before materialization re-borrows the thread state.
+/// scalars materialize. Two phases so the walk's use of the parse state
+/// ends before materialization needs it (nested, it would start fresh).
 pub fn lazy_children(ruby: &Ruby, rb_self: Obj<LazyNode>) -> Result<RArray, Error> {
     let base = rb_self.doc.bytes().as_ptr() as usize;
-    let descs: Result<Vec<ChildDesc>, nosj::ParseError> = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let descs: Result<Vec<ChildDesc>, nosj::ParseError> = with_pull_state(|state| {
         let mut r = rb_self.reader(&mut state.bufs);
         r.next_node()?;
         let mut out = Vec::new();

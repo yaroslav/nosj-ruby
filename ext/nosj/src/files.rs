@@ -10,7 +10,7 @@
 //! I/O failures raise the mapped `Errno::*` exception, like `File`
 //! methods do.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::fs;
 use std::io::Read;
 
@@ -22,14 +22,15 @@ use crate::gen;
 use crate::lazy::{self, DocBytes};
 use crate::parse::{err, materialize, materialize_at, parse_native_opts, span_of, ParseNativeOpts};
 use crate::pointer::path_to_pointer;
-use crate::state::PULL_STATE;
+use crate::state::{with_pull_state, with_taken};
 
 const NOT_UTF8: &str = "input is not valid UTF-8";
 
 thread_local! {
     /// Reused read buffer for `load_file`: capacity survives across
-    /// calls, so a hot loop over files allocates nothing.
-    static FILE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// calls, so a hot loop over files allocates nothing (see
+    /// `state::with_taken`).
+    static FILE_BUF: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
 /// On Unix the raw OS error IS the errno `rb_syserr_new` expects.
@@ -58,6 +59,9 @@ fn errno_of(e: &std::io::Error) -> Option<i32> {
 
 /// Map an I/O failure onto the matching `Errno::*` exception (class
 /// parity with `File.read`/`File.write`; the message carries the path).
+/// Constructing it runs the class's `initialize` (overridable Ruby), so
+/// the call is protected; a raise there propagates in its place, as it
+/// would from `File.read`.
 fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     use magnus::rb_sys::FromRawValue;
     let Some(errno) = errno_of(e) else {
@@ -66,8 +70,13 @@ fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     let Ok(cpath) = std::ffi::CString::new(path) else {
         return runtime_error(ruby, format!("{e} - {path}"));
     };
+    let raw =
+        match magnus::rb_sys::protect(|| unsafe { rb_sys::rb_syserr_new(errno, cpath.as_ptr()) }) {
+            Ok(raw) => raw,
+            Err(raised) => return raised,
+        };
     // SAFETY: rb_syserr_new returns a live Errno exception instance.
-    let exc = unsafe { Value::from_raw(rb_sys::rb_syserr_new(errno, cpath.as_ptr())) };
+    let exc = unsafe { Value::from_raw(raw) };
     match magnus::Exception::from_value(exc) {
         Some(exc) => exc.into(),
         None => runtime_error(ruby, format!("{e} - {path}")),
@@ -84,23 +93,16 @@ pub fn load_file_native(
 ) -> Result<Value, Error> {
     let o = parse_native_opts(ruby, opts)?;
     let p = path.to_string()?;
-    FILE_BUF.with(|cell| {
-        let mut buf = cell
-            .try_borrow_mut()
-            .map_or_else(|_| Vec::new(), |mut b| std::mem::take(&mut *b));
+    with_taken(&FILE_BUF, |buf| {
         buf.clear();
-        let result = read_into(&mut buf, &p)
+        read_into(buf, &p)
             .map_err(|e| io_error(ruby, &p, &e))
             .and_then(|()| {
-                if std::str::from_utf8(&buf).is_err() {
+                if std::str::from_utf8(buf).is_err() {
                     return Err(err(ruby, NOT_UTF8.into()));
                 }
-                materialize(ruby, &buf, &o)
-            });
-        if let Ok(mut slot) = cell.try_borrow_mut() {
-            *slot = buf;
-        }
-        result
+                materialize(ruby, buf, &o)
+            })
     })
 }
 
@@ -190,8 +192,7 @@ fn resolve_file_pointer(
     o: &ParseNativeOpts,
 ) -> Result<Value, Error> {
     with_mapped_file(ruby, path, |map| {
-        let resolved = PULL_STATE.with(|cell| {
-            let mut state = cell.borrow_mut();
+        let resolved = with_pull_state(|state| {
             // SAFETY: UTF-8 checked by with_mapped_file.
             unsafe { nosj::pointer_utf8_unchecked_with(&map, pointer, &mut state.bufs, o.popts) }
         });

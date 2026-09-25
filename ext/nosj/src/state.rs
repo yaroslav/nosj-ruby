@@ -10,18 +10,36 @@ use ahash::AHashMap;
 use magnus::typed_data::Obj;
 use magnus::{DataTypeFunctions, TypedData};
 use nosj::Buffers;
-use std::cell::RefCell;
+use std::cell::Cell;
+use std::thread::LocalKey;
 
-/// Everything a parse touches, allocated once per thread and reused:
-/// nosj's scratch buffers, the interned-key caches, and the GC-marked
-/// stacks.
+/// Run `f` on a pooled thread-local value, taken OUT of its cell for the
+/// call and stored back afterwards. Pooled state is never borrowed
+/// across a call that can reach Ruby: any allocation can raise
+/// NoMemoryError, whose longjmp skips these frames, and a RefCell borrow
+/// held across it would stay borrowed for good (under panic=abort, the
+/// next borrow kills the process). A value lost that way is only leaked;
+/// the next call, like a nested one finding the cell empty, starts from
+/// `T::default()`. The outermost call's value is the one stored back.
+pub(crate) fn with_taken<T: Default, R>(
+    key: &'static LocalKey<Cell<T>>,
+    f: impl FnOnce(&mut T) -> R,
+) -> R {
+    let mut value = key.take();
+    let result = f(&mut value);
+    key.set(value);
+    result
+}
+
+/// Everything a parse touches, reused across calls: nosj's scratch
+/// buffers, the interned-key caches, and the GC-marked stacks.
 pub(crate) struct PullState {
     pub(crate) bufs: Buffers,
     pub(crate) keys: AHashMap<Box<str>, rb_sys::VALUE>,
     /// Separate cache for symbolize_names mode: symbol and string VALUEs
     /// must never share a map.
     pub(crate) sym_keys: AHashMap<Box<str>, rb_sys::VALUE>,
-    /// Leaked once per thread; kept alive + GC-marked via the wrapped
+    /// Leaked once per state; kept alive + GC-marked via the wrapped
     /// handle.
     pub(crate) vstack: Option<&'static mut VStackShadow>,
     /// Marked shadow holding the cached key VALUEs; keys are kept alive by
@@ -29,14 +47,36 @@ pub(crate) struct PullState {
     pub(crate) key_shadow: Option<&'static mut VStackShadow>,
 }
 
+impl PullState {
+    #[cold]
+    fn fresh() -> Box<Self> {
+        Box::new(PullState {
+            bufs: Buffers::new(),
+            keys: AHashMap::with_capacity(256),
+            sym_keys: AHashMap::new(),
+            vstack: None,
+            key_shadow: None,
+        })
+    }
+}
+
 thread_local! {
-    pub(crate) static PULL_STATE: RefCell<PullState> = RefCell::new(PullState {
-        bufs: Buffers::new(),
-        keys: AHashMap::with_capacity(256),
-        sym_keys: AHashMap::new(),
-        vstack: None,
-        key_shadow: None,
-    });
+    static PULL_STATE: Cell<Option<Box<PullState>>> = const { Cell::new(None) };
+}
+
+/// Run `f` on this thread's parse state, taken out like [`with_taken`]
+/// (a state lost to a longjmp leaks its shadows' last VALUEs; a nested
+/// call would start a fresh one). Unlike the generate scratch, parse
+/// bodies never run Ruby code, so the thread cannot hop native threads
+/// mid-call and one thread-local access serves both the take and the
+/// put-back: measured ~5ns per call on tiny documents against two.
+pub(crate) fn with_pull_state<R>(f: impl FnOnce(&mut PullState) -> R) -> R {
+    PULL_STATE.with(|cell| {
+        let mut state = cell.take().unwrap_or_else(PullState::fresh);
+        let result = f(&mut state);
+        cell.set(Some(state));
+        result
+    })
 }
 
 /// GC-marked holder for pending VALUEs.
@@ -48,6 +88,12 @@ pub(crate) struct VStackShadow {
 /// through [`DataTypeFunctions::mark`] (its trampoline, not ours),
 /// pinning every pending VALUE with `rb_gc_mark` semantics. The class
 /// is defined (and made a private constant) at init.
+///
+/// Deliberately NOT `wb_protected`: parses push VALUEs into the shadow
+/// with plain stores, no write barriers, so an old protected handle
+/// would let the GC miss young values it holds (a use-after-free).
+/// Staying write-barrier-unprotected makes every GC rescan the handle,
+/// which costs nothing measurable: there are one to three per thread.
 #[derive(TypedData)]
 #[magnus(class = "NOSJ::ValueStackShadow", mark)]
 pub(crate) struct ShadowHandle(*const VStackShadow);
@@ -74,7 +120,7 @@ impl DataTypeFunctions for ShadowHandle {
     }
 }
 
-/// Create (once per thread) a leaked, GC-marked VStackShadow.
+/// Create (once per owning state) a leaked, GC-marked VStackShadow.
 pub(crate) fn ensure_marked_shadow(slot: &mut Option<&'static mut VStackShadow>) {
     if slot.is_none() {
         let ruby = magnus::Ruby::get().expect("called on a Ruby thread");

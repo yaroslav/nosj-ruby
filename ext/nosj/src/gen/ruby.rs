@@ -23,6 +23,21 @@ pub(super) fn protected_to_json(v: VALUE) -> Result<VALUE, Error> {
     magnus::rb_sys::protect(|| unsafe { rb_sys::rb_funcall(v, to_json_id(), 0) })
 }
 
+/// `v.to_json` if `v.respond_to?(:to_json)`, else `None`, under ONE
+/// protect: `rb_respond_to` dispatches to a user-defined `respond_to?` /
+/// `respond_to_missing?`, which may raise just like `to_json` itself.
+pub(super) fn protected_to_json_if_responds(v: VALUE) -> Result<Option<VALUE>, Error> {
+    const QUNDEF: VALUE = ruby_special_consts::RUBY_Qundef as VALUE;
+    let json = magnus::rb_sys::protect(|| unsafe {
+        if rb_sys::rb_respond_to(v, to_json_id()) != 0 {
+            rb_sys::rb_funcall(v, to_json_id(), 0)
+        } else {
+            QUNDEF
+        }
+    })?;
+    Ok((json != QUNDEF).then_some(json))
+}
+
 /// `v.as_json`, protected. Argument-less on purpose: ActiveSupport's
 /// JSONGemEncoder#jsonify recursion also calls as_json without
 /// options (only the top-level value receives them).
@@ -53,33 +68,37 @@ pub(crate) fn warm_up() {
 /// first generate is still found; a fragment instance existing implies
 /// its class does. The cached VALUE is a constant of the JSON module,
 /// so it can never be collected.
-pub(super) fn is_json_fragment(v: VALUE) -> bool {
+pub(super) fn is_json_fragment(v: VALUE) -> Result<bool, Error> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static FRAGMENT: AtomicUsize = AtomicUsize::new(0);
-    let mut cls = FRAGMENT.load(Ordering::Relaxed);
+    let mut cls = FRAGMENT.load(Ordering::Relaxed) as VALUE;
     if cls == 0 {
-        cls = resolve_json_fragment();
+        cls = resolve_json_fragment()?;
         if cls == 0 {
-            return false;
+            return Ok(false);
         }
-        FRAGMENT.store(cls, Ordering::Relaxed);
+        FRAGMENT.store(cls as usize, Ordering::Relaxed);
     }
-    unsafe { rb_sys::rb_obj_is_kind_of(v, cls as VALUE) != QFALSE }
+    Ok(unsafe { rb_sys::rb_obj_is_kind_of(v, cls) != QFALSE })
 }
 
-fn resolve_json_fragment() -> usize {
+/// `JSON::Fragment`, or 0 while undefined. Only the `rb_const_get`s are
+/// protected: fetching a constant can run its pending autoload (user
+/// code, whose raise propagates as any constant reference's would),
+/// while `rb_const_defined` never loads anything.
+fn resolve_json_fragment() -> Result<VALUE, Error> {
     unsafe {
         let object = rb_sys::rb_cObject;
         let json_id = rb_sys::rb_intern(c"JSON".as_ptr());
         if rb_sys::rb_const_defined(object, json_id) == 0 {
-            return 0;
+            return Ok(0);
         }
-        let json = rb_sys::rb_const_get(object, json_id);
+        let json = magnus::rb_sys::protect(|| rb_sys::rb_const_get(object, json_id))?;
         let fragment_id = rb_sys::rb_intern(c"Fragment".as_ptr());
         if rb_sys::rb_const_defined(json, fragment_id) == 0 {
-            return 0;
+            return Ok(0);
         }
-        rb_sys::rb_const_get(json, fragment_id) as usize
+        magnus::rb_sys::protect(|| rb_sys::rb_const_get(json, fragment_id))
     }
 }
 
@@ -95,7 +114,7 @@ pub(super) fn protected_encode_utf8(v: VALUE) -> Result<VALUE, Error> {
 }
 
 /// Interned `to_json` method ID, resolved once per process.
-pub(super) fn to_json_id() -> rb_sys::ID {
+fn to_json_id() -> rb_sys::ID {
     static TO_JSON: OnceLock<usize> = OnceLock::new();
     *TO_JSON.get_or_init(|| unsafe { rb_sys::rb_intern(c"to_json".as_ptr()) } as usize)
         as rb_sys::ID
@@ -109,12 +128,16 @@ pub(super) fn utf8_encindexes() -> (c_int, c_int) {
 // Coderange and encoding index live in RBasic flags (public ABI); reading
 // them inline instead of calling rb_enc_str_coderange / rb_enc_get_index is
 // how the gem avoids two C calls per string (RB_ENC_CODERANGE,
-// RB_ENCODING_GET_INLINED).
-const CR_MASK: u64 = 3 << 20;
-pub(super) const CR_7BIT: u64 = 1 << 20;
-pub(super) const CR_VALID: u64 = 2 << 20;
-const ENC_SHIFT: u64 = 22;
-const ENC_MASK: u64 = 127 << 22;
+// RB_ENCODING_GET_INLINED). The bit layout comes from rb-sys's bindings,
+// generated from the headers of the Ruby being built against, so it
+// follows any layout change instead of silently misreading flags.
+const CR_MASK: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_MASK as u64;
+pub(super) const CR_7BIT: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_7BIT as u64;
+pub(super) const CR_VALID: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_VALID as u64;
+const ENC_SHIFT: u64 = rb_sys::ruby_encoding_consts::RUBY_ENCODING_SHIFT as u64;
+const ENC_MASK: u64 = rb_sys::ruby_encoding_consts::RUBY_ENCODING_MASK as u64;
+/// Inline encoding-index sentinel: the real index is stored out of line.
+const ENC_INLINE_MAX: c_int = rb_sys::ruby_encoding_consts::RUBY_ENCODING_INLINE_MAX as c_int;
 
 #[inline(always)]
 pub(super) fn str_coderange(s: VALUE) -> u64 {
@@ -131,18 +154,18 @@ pub(super) fn str_coderange(s: VALUE) -> u64 {
 pub(super) fn str_enc_index(s: VALUE) -> c_int {
     let flags = unsafe { (*(s as *const rb_sys::RBasic)).flags };
     let idx = ((flags & ENC_MASK) >> ENC_SHIFT) as c_int;
-    if idx == 127 {
-        // RUBY_ENCODING_INLINE_MAX sentinel: index stored out of line.
+    if idx == ENC_INLINE_MAX {
         unsafe { rb_sys::rb_enc_get_index(s) }
     } else {
         idx
     }
 }
 
+/// `RB_SPECIAL_CONST_P` (immediates plus Qnil/Qfalse), through rb-sys's
+/// inline versioned stable API rather than a hand-copied bit test.
 #[inline(always)]
 pub(super) fn is_special_const(v: VALUE) -> bool {
-    // RB_SPECIAL_CONST_P: immediates plus Qnil/Qfalse.
-    (v & (ruby_special_consts::RUBY_IMMEDIATE_MASK as VALUE)) != 0 || v == QNIL || v == QFALSE
+    rb_sys::macros::SPECIAL_CONST_P(v)
 }
 
 /// Borrow a Ruby String's bytes.

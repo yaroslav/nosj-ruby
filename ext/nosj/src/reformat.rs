@@ -13,7 +13,7 @@
 //! canonical spelling (`1.50` becomes `1.5`), and string escapes are
 //! normalized by the emission kernels.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use magnus::value::ReprValue;
 use magnus::{Error, RString, Ruby, Value};
@@ -23,16 +23,15 @@ use nosj::{FloatFormat, WriteOptions, Writer};
 use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
 use crate::gen::opts::{parse_gen_opts, GenConfig, DEFAULT_CONFIG};
-use crate::parse::{parse_native_opts, utf8_input};
+use crate::parse::{parse_native_opts, utf8_input, ParseNativeOpts};
 use crate::patch::finish_string;
 use crate::sink::SinkAbort;
-use crate::state::PULL_STATE;
+use crate::state::{with_pull_state, with_taken};
 
 thread_local! {
-    /// Pooled output buffer: capacity survives across calls. The pipe
-    /// never calls back into Ruby, so the borrow spans the whole drive
-    /// without any reentrancy concern.
-    static PIPE_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Pooled output buffer: capacity survives across calls (see
+    /// `state::with_taken`).
+    static PIPE_BUF: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
 /// The event-to-Writer pipe. Structure events forward to the Writer's
@@ -230,37 +229,50 @@ fn write_options(cfg: &GenConfig) -> WriteOptions {
     w
 }
 
+/// Decoded reformat options: parse acceptance plus generate formatting.
+/// Decoded before the source is borrowed, since decoding can run Ruby
+/// (an option value's `to_int`; see `parse::utf8_input`).
+struct ReformatOpts {
+    parse: ParseNativeOpts,
+    generate: Option<GenConfig>,
+}
+
+impl ReformatOpts {
+    fn decode(ruby: &Ruby, opts: Value) -> Result<Self, Error> {
+        Ok(Self {
+            parse: parse_native_opts(ruby, opts)?,
+            generate: if opts.is_nil() {
+                None
+            } else {
+                Some(parse_gen_opts(ruby, opts)?.0)
+            },
+        })
+    }
+}
+
 /// Run the pipe over already-UTF-8-vouched bytes.
-fn reformat_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<RString, Error> {
-    let po = parse_native_opts(ruby, opts)?;
-    let built;
-    let gcfg: &GenConfig = if opts.is_nil() {
-        &DEFAULT_CONFIG
-    } else {
-        built = parse_gen_opts(ruby, opts)?.0;
-        &built
-    };
+fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RString, Error> {
+    let po = &opts.parse;
+    let gcfg = opts.generate.as_ref().unwrap_or(&DEFAULT_CONFIG);
     let wopts = write_options(gcfg);
 
-    PIPE_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
+    with_taken(&PIPE_BUF, |buf| {
         buf.clear();
         // The output is at least input-sized for minify-shaped runs.
         buf.reserve(input.len());
         let mut sink = PipeSink {
-            w: Writer::new(&mut buf, &wopts),
+            w: Writer::new(buf, &wopts),
             depth: 0,
             max_nesting: po.max_nesting,
             mode: gcfg.mode,
             allow_nan: gcfg.allow_nan,
         };
-        let result = PULL_STATE.with(|state_cell| {
-            let mut state = state_cell.borrow_mut();
+        let result = with_pull_state(|state| {
             // Safety: callers verified UTF-8 (coderange or full scan).
             unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts) }
         });
         match result {
-            Ok(()) => finish_string(&buf),
+            Ok(()) => finish_string(buf),
             Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
                 ruby,
                 format!(
@@ -296,8 +308,9 @@ pub fn reformat_native(
     data: RString,
     opts: Value,
 ) -> Result<RString, Error> {
+    let opts = ReformatOpts::decode(ruby, opts)?;
     let input = utf8_input(ruby, &data)?;
-    reformat_over(ruby, input, opts)
+    reformat_over(ruby, input, &opts)
 }
 
 /// `NOSJ.reformat_file_native(path, opts)`: the pipe over a read-only
@@ -309,12 +322,13 @@ pub fn reformat_file_native(
     opts: Value,
 ) -> Result<RString, Error> {
     let p = path.to_string()?;
+    let opts = ReformatOpts::decode(ruby, opts)?;
     // Mapping a zero-length file fails with EINVAL on Linux; route an
     // empty file to the parser's own "unexpected end of input" so the
     // error class is deterministic across platforms. Metadata failures
     // fall through for the mapper's Errno.
     if std::fs::metadata(&p).is_ok_and(|m| m.len() == 0) {
-        return reformat_over(ruby, &[], opts);
+        return reformat_over(ruby, &[], &opts);
     }
-    with_mapped_file(ruby, &p, |map| reformat_over(ruby, &map, opts))
+    with_mapped_file(ruby, &p, |map| reformat_over(ruby, &map, &opts))
 }

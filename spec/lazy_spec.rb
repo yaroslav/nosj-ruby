@@ -234,6 +234,20 @@ RSpec.describe "NOSJ.lazy" do
       expect(lazy["a"]["b"].value).to eq([1, 2, 3])
       expect(lazy.value).to eq({"a" => {"b" => [1, 2, 3]}})
     end
+
+    it "participates in generational GC (write-barrier protected)" do
+      require "objspace"
+      # A node's one reference (the frozen source) is fixed before the
+      # node exists, so nodes can be promoted instead of being rescanned
+      # by every minor GC.
+      src = ('{"n":[' + Array.new(50) { '{"i":1}' }.join(",") + "]}").freeze
+      nodes = NOSJ.lazy(src)["n"].to_enum(:each).to_a
+      expect(nodes).to all(be_a(NOSJ::Lazy))
+      4.times { GC.start }
+      flags = JSON.parse(ObjectSpace.dump(nodes.first))["flags"]
+      expect(flags).to include("wb_protected" => true, "old" => true)
+      expect(nodes.last["i"]).to eq(1)
+    end
   end
 
   describe "corpus equivalence" do

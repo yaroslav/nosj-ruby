@@ -24,22 +24,31 @@ fn blank(line: &[u8]) -> bool {
 /// Yield one parsed value per non-blank line. Each line parses through
 /// the shared sink machinery against the FULL source, so a malformed
 /// line raises the rich ParserError whose `#line` is the physical
-/// NDJSON line number. The thread state is borrowed per line, never
-/// across a yield: the block is free to call back into NOSJ.
-fn walk_lines(ruby: &Ruby, source: &[u8], o: &ParseNativeOpts) -> Result<(), Error> {
+/// NDJSON line number. No slice is held across a yield: the block runs
+/// arbitrary Ruby (even deduplicating a frozen source swaps its buffer,
+/// see `lazy::DocBytes`), so `source` hands out the bytes afresh for
+/// every line, with identical content and so identical offsets.
+fn walk_lines<'s>(
+    ruby: &Ruby,
+    source: impl Fn() -> &'s [u8],
+    o: &ParseNativeOpts,
+) -> Result<(), Error> {
     let mut pos = 0;
-    while pos < source.len() {
-        let line_end = source[pos..]
+    loop {
+        let bytes = source();
+        if pos >= bytes.len() {
+            return Ok(());
+        }
+        let line_end = bytes[pos..]
             .iter()
             .position(|&b| b == b'\n')
-            .map_or(source.len(), |p| pos + p);
-        if !blank(&source[pos..line_end]) {
-            let value = materialize_at(ruby, source, pos, line_end, o)?;
+            .map_or(bytes.len(), |p| pos + p);
+        if !blank(&bytes[pos..line_end]) {
+            let value = materialize_at(ruby, bytes, pos, line_end, o)?;
             let _: Value = ruby.yield_value(value)?;
         }
         pos = line_end + 1;
     }
-    Ok(())
 }
 
 /// `NOSJ.each_line(source, opts) { |value| }`: the Ruby wrapper
@@ -53,15 +62,16 @@ pub fn each_line_native(
     let o = parse_native_opts(ruby, opts)?;
     let input = utf8_input(ruby, &data)?;
     if data.as_value().is_frozen() {
-        // A frozen source cannot be mutated by the block, and `data`
-        // lives on this frame, so the borrow stays valid across yields.
-        walk_lines(ruby, input, &o)?;
+        // A frozen source keeps its content (never its buffer, see
+        // walk_lines), so it is re-read per line, zero-copy.
+        // SAFETY: validated UTF-8 above; `data` lives on this frame.
+        walk_lines(ruby, || unsafe { data.as_slice() }, &o)?;
     } else {
-        // The block could mutate (or free the buffer of) an unfrozen
-        // source mid-iteration; walk a private copy. Same policy as
-        // NOSJ.lazy: pass a frozen string for zero-copy.
+        // The block could rewrite an unfrozen source mid-iteration;
+        // walk a private copy. Same policy as NOSJ.lazy: pass a frozen
+        // string for zero-copy.
         let owned = input.to_vec();
-        walk_lines(ruby, &owned, &o)?;
+        walk_lines(ruby, || &owned, &o)?;
     }
     Ok(ruby.qnil().as_value())
 }
@@ -84,7 +94,7 @@ pub fn each_line_file_native(
         return Ok(ruby.qnil().as_value());
     }
     with_mapped_file(ruby, &p, |map| {
-        walk_lines(ruby, &map, &o)?;
+        walk_lines(ruby, || &map, &o)?;
         Ok(ruby.qnil().as_value())
     })
 }

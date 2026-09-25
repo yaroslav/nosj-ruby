@@ -22,6 +22,29 @@ if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
     end
   end
 
+  # A value whose to_json yields the thread first: a scheduling point
+  # where an M:N Ruby thread may resume on another native thread, the
+  # hazard the generate scratch's take-out design guards against.
+  class RactorSpecYielder
+    def initialize(value)
+      @value = value
+    end
+
+    def to_json(*)
+      Thread.pass
+      NOSJ.generate(@value)
+    end
+  end
+
+  # respond_to? yields, then raises: the protected fallback check must
+  # surface the exception inside a Ractor exactly as on the main one.
+  class RactorSpecRespondBoom
+    def respond_to?(*)
+      Thread.pass
+      raise ArgumentError, "boom"
+    end
+  end
+
   # Ractor blocks cannot reach the example (self, lets, locals), so the
   # workloads live in a module both sides call with plain arguments.
   module RactorSpecBattery
@@ -84,6 +107,35 @@ if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
       NOSJ.parse(source)
     rescue NOSJ::ParserError => e
       [e.class.name, e.message, e.byte_offset, e.line, e.column, e.snippet]
+    end
+
+    # One round over the paths whose thread-local and callback handling
+    # is most delicate, with the thread yielding inside callbacks and
+    # blocks. Returns the labels that disagreed with their expectation.
+    def hostile_round(doc, lines, path, n)
+      obj = {"n" => n, "list" => [RactorSpecYielder.new([n, "x"]), {"k" => RactorSpecYielder.new(n)}]}
+      raised = begin
+        NOSJ.generate([RactorSpecRespondBoom.new])
+        nil
+      rescue ArgumentError => e
+        e.message
+      end
+      seen = []
+      NOSJ.each_line(lines) do |v|
+        Thread.pass if v["i"] == 5
+        seen << v["i"]
+      end
+      NOSJ.write_file(path, obj)
+      spliced = NOSJ.splice(doc, "/users/0/id" => RactorSpecYielder.new(n))
+      {
+        "generate" => NOSJ.generate(obj) == %({"n":#{n},"list":[[#{n},"x"],{"k":#{n}}]}),
+        "respond_to? raise" => raised == "boom",
+        "lazy" => NOSJ.lazy(doc)["users"][n % 10]["id"] == n % 10,
+        "each_line" => seen == (1..30).to_a,
+        "splice" => spliced.start_with?(%({"users":[{"id":#{n},)),
+        "minify" => NOSJ.minify(doc) == doc,
+        "files" => NOSJ.load_file(path)["n"] == n
+      }.reject { |_, ok| ok }.keys
     end
   end
 
@@ -192,6 +244,26 @@ if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0")
     # happen inside a Ractor: before the init-time warm-up, four Ractors
     # racing it deadlocked about half the time. A fresh process makes
     # sure the main Ractor never touched nosj first.
+    it "survives yielding and raising callbacks across 4 Ractors x 2 threads" do
+      doc = NOSJ.generate({"users" => Array.new(10) { |i| {"id" => i, "tags" => %w[a b]} }}).freeze
+      lines = Array.new(30) { |i| NOSJ.generate({"i" => i + 1}) }.join("\n").freeze
+      dir = Dir.mktmpdir
+      failures = Array.new(4) do |r|
+        Ractor.new(doc, lines, dir, r) do |d, l, tmp, rid|
+          Array.new(2) do |t|
+            Thread.new do
+              path = File.join(tmp, "r#{rid}-t#{t}.json")
+              Array.new(300) { |n| RactorSpecBattery.hostile_round(d, l, path, n) }.flatten.uniq
+            end
+          end.flat_map(&:value)
+        end
+      end.flat_map(&:value)
+      expect(failures).to eq([])
+      expect(NOSJ.generate([RactorSpecYielder.new(1)])).to eq("[1]")
+    ensure
+      FileUtils.rm_rf(dir) if dir
+    end
+
     it "survives first touches racing inside Ractors in a fresh process" do
       script = <<~RUBY
         require "nosj"

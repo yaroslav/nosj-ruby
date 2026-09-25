@@ -8,7 +8,7 @@ use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::sink::{NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
-use crate::state::{ensure_marked_shadow, PullState, PULL_STATE};
+use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
 
 pub(crate) use crate::errors::parser_error as err;
 
@@ -22,6 +22,12 @@ pub(crate) fn span_of(source: &[u8], sub: &[u8]) -> (usize, usize) {
 
 /// Validate that `data` is UTF-8 (or US-ASCII) with intact coderange and
 /// hand out its byte slice.
+///
+/// The slice borrows the string's buffer, which Ruby may reallocate or
+/// swap (even for a frozen string: see `lazy::DocBytes`), so it must
+/// not be held across anything that can run Ruby code: user callbacks,
+/// yields, or option decoding (`to_int` and friends). Decode options
+/// first; re-borrow after callbacks.
 pub(crate) fn utf8_input<'a>(ruby: &Ruby, data: &'a RString) -> Result<&'a [u8], Error> {
     let raw = data.as_raw();
     unsafe {
@@ -178,8 +184,7 @@ pub(crate) fn materialize_at(
     end: usize,
     o: &ParseNativeOpts,
 ) -> Result<Value, Error> {
-    PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    with_pull_state(|state| {
         ensure_marked_shadow(&mut state.vstack);
         ensure_marked_shadow(&mut state.key_shadow);
 
@@ -190,7 +195,7 @@ pub(crate) fn materialize_at(
             vstack,
             key_shadow,
             ..
-        } = &mut *state;
+        } = state;
         let stack = &mut vstack.as_mut().unwrap().values;
         stack.clear();
 
@@ -238,8 +243,7 @@ pub fn valid_native(
     let Ok(input) = utf8_input(ruby, &data) else {
         return Ok(false);
     };
-    let ok = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let ok = with_pull_state(|state| {
         let mut sink = NullSink {
             depth: 0,
             max_nesting: o.max_nesting,

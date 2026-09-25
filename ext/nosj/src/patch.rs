@@ -16,7 +16,7 @@ use magnus::{Error, ExceptionClass, RArray, RHash, RString, Ruby, Value};
 use crate::errors::{nosj_exception, parser_error_at};
 use crate::gen::{self, opts::GenConfig};
 use crate::parse::{materialize_at, span_of, utf8_input, ParseNativeOpts};
-use crate::state::PULL_STATE;
+use crate::state::with_pull_state;
 
 const WS: [u8; 4] = *b" \t\n\r";
 
@@ -46,8 +46,7 @@ fn gen_config<'a>(
 /// Parse failures raise the rich ParserError (absolute positions);
 /// pointer syntax errors raise ArgumentError, like `at_pointer`.
 fn span_at(ruby: &Ruby, doc: &[u8], pointer: &str) -> Result<Option<(usize, usize)>, Error> {
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // SAFETY: every entry validated the document bytes as UTF-8.
         unsafe { nosj::pointer_utf8_unchecked(doc, pointer, &mut state.bufs) }
     });
@@ -82,8 +81,7 @@ fn container_children(
 ) -> Result<(u8, Vec<ChildSpan>), Error> {
     let span = &doc[start..end];
     let kind = span.first().copied().unwrap_or(0);
-    let walk: Result<Vec<ChildSpan>, nosj::ParseError> = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let walk: Result<Vec<ChildSpan>, nosj::ParseError> = with_pull_state(|state| {
         // SAFETY: doc validated UTF-8 by the entry; spans lie on token
         // edges.
         let mut r = unsafe { nosj::Reader::from_utf8_unchecked(span, &mut state.bufs) };
@@ -360,6 +358,12 @@ fn op_test(ruby: &Ruby, doc: &[u8], path: &str, expected: Value) -> Result<(), E
 /// `NOSJ.splice(json, edits, opts)`: batch pointer replacement. All
 /// targets resolve in ONE forward pass; the output is built in one
 /// sweep copying every byte outside the target spans untouched.
+///
+/// Every value is generated BEFORE the source bytes are borrowed:
+/// generation runs user code (`to_json`, `to_s`) that may mutate or
+/// reallocate the source, or drop the only Ruby reference to a later
+/// value. Rendering inside the edits iteration keeps each value a live
+/// argument while it runs, and nothing after the borrow calls Ruby.
 pub fn splice_native(
     ruby: &Ruby,
     _rb_self: Value,
@@ -369,21 +373,26 @@ pub fn splice_native(
 ) -> Result<RString, Error> {
     let mut slot = None;
     let cfg = gen_config(ruby, opts, &mut slot)?;
-    let input = utf8_input(ruby, &data)?;
+    // Validate the encoding up front (error precedence); the bytes are
+    // borrowed again only after every callback has run.
+    utf8_input(ruby, &data)?;
 
     let mut pointers: Vec<String> = Vec::with_capacity(edits.len());
-    let mut values: Vec<Value> = Vec::with_capacity(edits.len());
+    let mut rendered: Vec<u8> = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(edits.len());
     edits.foreach(|k: Value, v: Value| {
         let ptr = RString::from_value(k)
             .ok_or_else(|| arg_error(ruby, "splice pointers must be Strings".into()))?;
         pointers.push(ptr.to_string()?);
-        values.push(v);
+        let start = rendered.len();
+        gen::emit_into(ruby, v, cfg, &mut rendered)?;
+        ranges.push((start, rendered.len()));
         Ok(magnus::r_hash::ForEach::Continue)
     })?;
 
+    let input = utf8_input(ruby, &data)?;
     let refs: Vec<&str> = pointers.iter().map(String::as_str).collect();
-    let resolved = PULL_STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
+    let resolved = with_pull_state(|state| {
         // SAFETY: coderange verified by utf8_input.
         unsafe { nosj::pointers_utf8_unchecked(input, &refs, &mut state.bufs) }
     });
@@ -395,7 +404,7 @@ pub fn splice_native(
         Err(e) => return Err(parser_error_at(ruby, input, e.offset, e.to_string())),
     };
 
-    let mut spans: Vec<(usize, usize, Value)> = Vec::with_capacity(pointers.len());
+    let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(pointers.len());
     for (i, hit) in hits.into_iter().enumerate() {
         let Some(slice) = hit else {
             let exc: ExceptionClass = ruby.exception_key_error();
@@ -405,7 +414,7 @@ pub fn splice_native(
             ));
         };
         let (s, e) = span_of(input, slice.as_bytes());
-        spans.push((s, e, values[i]));
+        spans.push((s, e, i));
     }
     spans.sort_unstable_by_key(|&(s, _, _)| s);
     for pair in spans.windows(2) {
@@ -417,11 +426,12 @@ pub fn splice_native(
         }
     }
 
-    let mut out = Vec::with_capacity(input.len() + 64);
+    let mut out = Vec::with_capacity(input.len() + rendered.len());
     let mut pos = 0;
-    for &(s, e, v) in &spans {
+    for &(s, e, edit) in &spans {
+        let (rs, re) = ranges[edit];
         out.extend_from_slice(&input[pos..s]);
-        gen::emit_into(ruby, v, cfg, &mut out)?;
+        out.extend_from_slice(&rendered[rs..re]);
         pos = e;
     }
     out.extend_from_slice(&input[pos..]);

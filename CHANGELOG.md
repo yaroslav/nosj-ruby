@@ -1,5 +1,37 @@
 ## [Unreleased]
 
+- Fixed a crash in `NOSJ.generate`: an object whose `to_json` or
+  `to_s` shrank the array being generated (for example with
+  `Array#clear`) made the generator read freed memory, usually a
+  segfault. The array length is now re-read for every element, like
+  the json gem, so elements a callback appends are emitted too.
+- Fixed memory corruption in `NOSJ.splice`: a replacement value whose
+  `to_json` modified the source string, deduplicated a frozen String
+  subclass (`-str`), or removed entries from the edits hash could make
+  splice read freed memory, copying unrelated heap bytes into the
+  result or crashing. All values are now generated before the source
+  is read.
+- Fixed `NOSJ.lazy` and `NOSJ.each_line` reading freed memory when the
+  source is a frozen String subclass (such as
+  `ActiveSupport::SafeBuffer`) or a frozen string carrying instance
+  variables, and it is deduplicated with `-str` while the lazy
+  document is alive or between lines: Ruby swaps such a string's
+  buffer, and the old one kept being read (wrong values, or a crash).
+- Fixed a memory leak in `NOSJ.generate` and `NOSJ.write_file`: an
+  exception raised by user code the generator calls bypassed its
+  cleanup and leaked its output buffer (megabytes per call after large
+  documents). Affected: a raising `respond_to?` or
+  `respond_to_missing?`, a raising `to_s` on an encoding-conversion
+  error, a raising autoload of `JSON::Fragment` (strict and Rails
+  modes), and a raising `Errno` constructor for a failed write. The
+  exception still propagates unchanged.
+- Fixed: after a `NoMemoryError` in the middle of a parse (or
+  `minify`/`reformat`), the next call on that thread aborted the whole
+  process. Per-thread parser state is now recovered instead.
+- `NOSJ::Lazy` nodes now take part in generational GC: holding many
+  nodes no longer slows down every minor GC (200,000 live nodes: 2.9 ms
+  per minor GC before, 0.1 ms now), and they are freed immediately
+  when collected.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`
