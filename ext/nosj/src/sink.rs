@@ -18,7 +18,7 @@ pub(crate) const MAX_NESTING: usize = 100;
 const KEY_CACHE_CAP: usize = 2048;
 
 /// Why a sink stopped the drive; mapped onto the gem's exceptions in
-/// [`crate::parse::finish_drive`]. Sinks see no offsets, so the two
+/// [`crate::parse::drive_error`]. Sinks see no offsets, so the two
 /// document refusals get their position from a cold-path re-walk
 /// (`crate::locate`).
 pub(crate) enum SinkAbort {

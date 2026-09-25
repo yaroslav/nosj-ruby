@@ -6,7 +6,7 @@
 use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
-use crate::errors::{nesting_error, parser_error, parser_error_at};
+use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
 use crate::locate::Repeat;
 use crate::opt_reader::{Opt, OptReader};
 use crate::sink::{DupKeys, NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
@@ -138,94 +138,93 @@ pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Erro
     Ok(out)
 }
 
-/// ParserError for a duplicate key a sink refused in `source[start..end]`,
-/// positioned like json 3's: at the `{` of the object repeating it.
-pub(crate) fn duplicate_key_error(
+pub(crate) type DriveResult = Result<(), nosj::DriveError<SinkAbort>>;
+
+/// A drive's failure as the gem's exception; shared by every driver.
+/// `source[start..end]` is what was driven, within the full document,
+/// so ParserError positions stay absolute when a subtree slice was
+/// parsed. Sinks see no offsets, so their two document refusals are
+/// positioned by a cold-path re-walk (`crate::locate`).
+pub(crate) fn drive_error(
     ruby: &Ruby,
+    failure: nosj::DriveError<SinkAbort>,
+    o: &ParseNativeOpts,
     source: &[u8],
-    start: usize,
-    end: usize,
-    popts: nosj::ParseOptions,
+    (start, end): (usize, usize),
 ) -> Error {
     use magnus::value::ReprValue;
-    match crate::locate::duplicate_key(&source[start..end], popts) {
-        Repeat::Found { at, key } => parser_error_at(
+    use nosj::DriveError::{Parse, Sink};
+
+    let driven = &source[start..end];
+    match failure {
+        Sink(SinkAbort::Overflow) => parser_error(ruby, "document too large".into()),
+        Sink(SinkAbort::BadBigint) => parser_error(ruby, "invalid bignum".into()),
+        Sink(SinkAbort::TooDeep) => nesting_error(
             ruby,
-            source,
-            start + at,
-            format!(
-                "duplicate key {} at byte {at}",
-                ruby.str_new(&key).inspect()
-            ),
+            format!("nesting of {} is too deep", o.max_nesting.saturating_add(1)),
         ),
-        Repeat::Absent | Repeat::Undecided => parser_error(ruby, "duplicate key".into()),
+        // Positioned like json 3's: at the `{` of the object repeating
+        // the key.
+        Sink(SinkAbort::DuplicateKey) => match crate::locate::duplicate_key(driven, o.popts) {
+            Repeat::Found { at, key } => parser_error_at(
+                ruby,
+                source,
+                start + at,
+                format!(
+                    "duplicate key {} at byte {at}",
+                    ruby.str_new(&key).inspect()
+                ),
+            ),
+            Repeat::Absent | Repeat::Undecided => parser_error(ruby, "duplicate key".into()),
+        },
+        Sink(SinkAbort::LoneSurrogate) => match crate::locate::first_walk_error(driven, o.popts) {
+            Some(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
+            None => parser_error(ruby, "lone UTF-16 surrogate".into()),
+        },
+        // Only the reformat pipe raises it: generation refuses a
+        // non-finite float, with the gem's GeneratorError.
+        Sink(SinkAbort::NonFiniteFloat(spelling)) => Error::new(
+            nosj_exception(ruby, "GeneratorError"),
+            format!("{spelling} not allowed in JSON"),
+        ),
+        Parse(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
     }
 }
 
-/// ParserError for a lone surrogate a sink refused in
-/// `source[start..end]`, at the offending string.
-pub(crate) fn lone_surrogate_error(
-    ruby: &Ruby,
-    source: &[u8],
-    start: usize,
-    end: usize,
-    popts: nosj::ParseOptions,
-) -> Error {
-    match crate::locate::first_walk_error(&source[start..end], popts) {
-        Some(e) => parser_error_at(ruby, source, start + e.offset, e.to_string()),
-        None => parser_error(ruby, "lone UTF-16 surrogate".into()),
+/// Drive a sink that builds no Hash (`valid?`, the reformat pipe) under
+/// json 3's duplicate-key rule. `drive(check_dups)` runs the parse. With
+/// the check on, `DupKeys` compares key fingerprints, so a refusal is
+/// confirmed exactly, and a collision (no object really repeats a key)
+/// drives again with the check off.
+pub(crate) fn drive_hashless(
+    input: &[u8],
+    o: &ParseNativeOpts,
+    mut drive: impl FnMut(bool) -> DriveResult,
+) -> DriveResult {
+    let result = drive(!o.allow_duplicate_key);
+    if matches!(result, Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)))
+        && matches!(crate::locate::duplicate_key(input, o.popts), Repeat::Absent)
+    {
+        return drive(false);
     }
+    result
 }
 
-/// Pop the root value off the sink stack, or map a drive failure onto
-/// the gem's exceptions. Shared by every driver. `source`/`base` locate
-/// the driven bytes within the full document, so ParserError positions
-/// stay absolute when a subtree slice was parsed.
+/// Pop the root value off the sink stack, or raise the drive's failure
+/// (see [`drive_error`]).
 fn finish_drive(
     ruby: &Ruby,
-    result: Result<(), nosj::DriveError<SinkAbort>>,
+    result: DriveResult,
     stack: &mut Vec<rb_sys::VALUE>,
     o: &ParseNativeOpts,
     source: &[u8],
-    (base, end): (usize, usize),
+    span: (usize, usize),
 ) -> Result<Value, Error> {
-    let max_nesting = o.max_nesting;
-    match result {
-        Ok(()) => {
-            let raw = stack
-                .pop()
-                .unwrap_or(rb_sys::special_consts::Qnil as rb_sys::VALUE);
-            Ok(unsafe { Value::from_raw(raw) })
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::Overflow)) => {
-            Err(parser_error(ruby, "document too large".into()))
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::BadBigint)) => {
-            Err(parser_error(ruby, "invalid bignum".into()))
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-            ruby,
-            format!("nesting of {} is too deep", max_nesting.saturating_add(1)),
-        )),
-        Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) => {
-            Err(duplicate_key_error(ruby, source, base, end, o.popts))
-        }
-        Err(nosj::DriveError::Sink(SinkAbort::LoneSurrogate)) => {
-            Err(lone_surrogate_error(ruby, source, base, end, o.popts))
-        }
-        // Raised only by the reformat pipe's sink, which never drives
-        // through here; the match must stay total.
-        Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(parser_error(
-            ruby,
-            format!("{spelling} not allowed in JSON"),
-        )),
-        Err(nosj::DriveError::Parse(e)) => Err(parser_error_at(
-            ruby,
-            source,
-            base + e.offset,
-            e.to_string(),
-        )),
-    }
+    result.map_err(|failure| drive_error(ruby, failure, o, source, span))?;
+    let raw = stack
+        .pop()
+        .unwrap_or(rb_sys::special_consts::Qnil as rb_sys::VALUE);
+    Ok(unsafe { Value::from_raw(raw) })
 }
 
 /// Drive the fused cursor over the whole of `source`. See
@@ -305,7 +304,7 @@ pub fn valid_native(
     let Ok(input) = utf8_input(ruby, &data) else {
         return Ok(false);
     };
-    let validate = |check_dups: bool| {
+    let result = drive_hashless(input, &o, |check_dups| {
         with_pull_state(|state| {
             let mut sink = NullSink {
                 depth: 0,
@@ -315,15 +314,6 @@ pub fn valid_native(
             // Safety: coderange verified by utf8_input.
             unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
         })
-    };
-    Ok(match validate(!o.allow_duplicate_key) {
-        Ok(()) => true,
-        // Fingerprints matched: a real repeat is invalid; a collision
-        // means the rest of the document still needs validating.
-        Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) => {
-            matches!(crate::locate::duplicate_key(input, o.popts), Repeat::Absent)
-                && validate(false).is_ok()
-        }
-        Err(_) => false,
-    })
+    });
+    Ok(result.is_ok())
 }

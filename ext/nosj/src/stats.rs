@@ -8,9 +8,8 @@ use ahash::AHashMap;
 use magnus::value::ReprValue;
 use magnus::{Error, RHash, RString, Ruby, Value};
 
-use crate::errors::{nesting_error, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
-use crate::parse::{parse_native_opts, utf8_input};
+use crate::parse::{drive_error, parse_native_opts, utf8_input};
 use crate::sink::SinkAbort;
 use crate::state::with_pull_state;
 
@@ -260,19 +259,8 @@ fn stats_over(ruby: &Ruby, input: &[u8], opts: Value) -> Result<Value, Error> {
         // Safety: callers verified UTF-8 (coderange or a full scan).
         unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }
     });
-    match result {
-        Ok(()) => stats_to_hash(ruby, &sink, input.len()),
-        Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-            ruby,
-            format!("nesting of {} is too deep", o.max_nesting.saturating_add(1)),
-        )),
-        // The other aborts cannot happen (this sink never raises them),
-        // but the match must be total.
-        Err(nosj::DriveError::Sink(_)) => Err(parser_error(ruby, "stats pass aborted".into())),
-        Err(nosj::DriveError::Parse(e)) => {
-            Err(parser_error_at(ruby, input, e.offset, e.to_string()))
-        }
-    }
+    result.map_err(|failure| drive_error(ruby, failure, &o, input, (0, input.len())))?;
+    stats_to_hash(ruby, &sink, input.len())
 }
 
 /// `NOSJ.stats(source, opts)`: document statistics from one null-sink

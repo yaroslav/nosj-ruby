@@ -17,13 +17,11 @@ use std::cell::Cell;
 use magnus::{Error, RString, Ruby, Value};
 use nosj::{FloatFormat, WriteOptions, Writer};
 
-use crate::errors::{nesting_error, nosj_exception, parser_error, parser_error_at};
 use crate::files::with_mapped_file;
 use crate::gen::opts::{read_gen_opts, GenConfig, DEFAULT_CONFIG};
 use crate::opt_reader::OptReader;
 use crate::parse::{
-    duplicate_key_error, lone_surrogate_error, options_hash, read_parse_opts, utf8_input,
-    ParseNativeOpts,
+    drive_error, drive_hashless, options_hash, read_parse_opts, utf8_input, ParseNativeOpts,
 };
 use crate::patch::finish_string;
 use crate::sink::{DupKeys, SinkAbort};
@@ -208,7 +206,7 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RStri
     let wopts = write_options(gcfg);
 
     with_taken(&PIPE_BUF, |buf| {
-        let pipe = |buf: &mut Vec<u8>, check_dups: bool| {
+        drive_hashless(input, po, |check_dups| {
             buf.clear();
             // The output is at least input-sized for minify-shaped runs.
             buf.reserve(input.len());
@@ -225,41 +223,9 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RStri
                     nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, po.popts)
                 }
             })
-        };
-        let mut result = pipe(buf, !po.allow_duplicate_key);
-        if let Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) = result {
-            if !matches!(
-                crate::locate::duplicate_key(input, po.popts),
-                crate::locate::Repeat::Absent
-            ) {
-                return Err(duplicate_key_error(ruby, input, 0, input.len(), po.popts));
-            }
-            // A fingerprint collision, not a repeat: redo without the check.
-            result = pipe(buf, false);
-        }
-        match result {
-            Ok(()) => finish_string(buf),
-            Err(nosj::DriveError::Sink(SinkAbort::TooDeep)) => Err(nesting_error(
-                ruby,
-                format!(
-                    "nesting of {} is too deep",
-                    po.max_nesting.saturating_add(1)
-                ),
-            )),
-            Err(nosj::DriveError::Sink(SinkAbort::LoneSurrogate)) => {
-                Err(lone_surrogate_error(ruby, input, 0, input.len(), po.popts))
-            }
-            Err(nosj::DriveError::Sink(SinkAbort::NonFiniteFloat(spelling))) => Err(Error::new(
-                nosj_exception(ruby, "GeneratorError"),
-                format!("{spelling} not allowed in JSON"),
-            )),
-            Err(nosj::DriveError::Sink(_)) => {
-                Err(parser_error(ruby, "reformat pass aborted".into()))
-            }
-            Err(nosj::DriveError::Parse(e)) => {
-                Err(parser_error_at(ruby, input, e.offset, e.to_string()))
-            }
-        }
+        })
+        .map_err(|failure| drive_error(ruby, failure, po, input, (0, input.len())))?;
+        finish_string(buf)
     })
 }
 
