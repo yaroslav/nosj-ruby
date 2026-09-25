@@ -228,7 +228,10 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RStri
         };
         let mut result = pipe(buf, !po.allow_duplicate_key);
         if let Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) = result {
-            if crate::locate::duplicate_key(input, po.popts).is_some() {
+            if !matches!(
+                crate::locate::duplicate_key(input, po.popts),
+                crate::locate::Repeat::Absent
+            ) {
                 return Err(duplicate_key_error(ruby, input, 0, input.len(), po.popts));
             }
             // A fingerprint collision, not a repeat: redo without the check.

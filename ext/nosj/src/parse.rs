@@ -7,6 +7,7 @@ use magnus::rb_sys::{AsRawValue, FromRawValue};
 use magnus::{Error, RString, Ruby, Value};
 
 use crate::errors::{nesting_error, parser_error, parser_error_at};
+use crate::locate::Repeat;
 use crate::opt_reader::{Opt, OptReader};
 use crate::sink::{DupKeys, NullSink, RubyValueSink, SinkAbort, MAX_NESTING};
 use crate::state::{ensure_marked_shadow, with_pull_state, PullState};
@@ -138,8 +139,7 @@ pub(crate) fn read_parse_opts(r: &mut OptReader) -> Result<ParseNativeOpts, Erro
 }
 
 /// ParserError for a duplicate key a sink refused in `source[start..end]`,
-/// positioned like json 3's: at the `{` of the object repeating it (or
-/// unpositioned when the document nests past the walk's depth limit).
+/// positioned like json 3's: at the `{` of the object repeating it.
 pub(crate) fn duplicate_key_error(
     ruby: &Ruby,
     source: &[u8],
@@ -149,7 +149,7 @@ pub(crate) fn duplicate_key_error(
 ) -> Error {
     use magnus::value::ReprValue;
     match crate::locate::duplicate_key(&source[start..end], popts) {
-        Some((at, key)) => parser_error_at(
+        Repeat::Found { at, key } => parser_error_at(
             ruby,
             source,
             start + at,
@@ -158,7 +158,7 @@ pub(crate) fn duplicate_key_error(
                 ruby.str_new(&key).inspect()
             ),
         ),
-        None => parser_error(ruby, "duplicate key".into()),
+        Repeat::Absent | Repeat::Undecided => parser_error(ruby, "duplicate key".into()),
     }
 }
 
@@ -321,7 +321,8 @@ pub fn valid_native(
         // Fingerprints matched: a real repeat is invalid; a collision
         // means the rest of the document still needs validating.
         Err(nosj::DriveError::Sink(SinkAbort::DuplicateKey)) => {
-            crate::locate::duplicate_key(input, o.popts).is_none() && validate(false).is_ok()
+            matches!(crate::locate::duplicate_key(input, o.popts), Repeat::Absent)
+                && validate(false).is_ok()
         }
         Err(_) => false,
     })

@@ -56,6 +56,21 @@ RSpec.describe "NOSJ.valid?" do
     expect(NOSJ.valid?('["\udc00"]')).to be(false)
   end
 
+  it "refuses and positions repeats and lone surrogates however deep they nest" do
+    depth = 5000
+    repeated = "[" * depth + '{"a":1,"a":2}' + "]" * depth
+    expect(NOSJ.valid?(repeated, max_nesting: false)).to be(false)
+    [-> { NOSJ.parse(repeated, max_nesting: false) }, -> { NOSJ.minify(repeated, max_nesting: false) }].each do |call|
+      expect(&call).to raise_error(NOSJ::ParserError, %(duplicate key "a" at byte #{depth})) { |e|
+        expect(e.byte_offset).to eq(depth)
+      }
+    end
+    lone = "[" * depth + '"\udc00"' + "]" * depth
+    expect(NOSJ.valid?(lone, max_nesting: false)).to be(false)
+    expect { NOSJ.parse(lone, max_nesting: false) }
+      .to raise_error(NOSJ::ParserError, "lone UTF-16 surrogate at byte #{depth}")
+  end
+
   it "honors max_nesting like parse" do
     deep = "[" * 101 + "]" * 101
     expect(NOSJ.valid?(deep)).to be(false)
