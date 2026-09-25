@@ -54,6 +54,34 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "NOSJ.lazy over a frozen source" do
+    # Deduplicating a frozen String subclass (or one carrying an ivar)
+    # swaps its heap buffer and frees the old one; lazy nodes borrow
+    # frozen sources zero-copy, so they must follow the swap.
+    %w[subclass ivar].each do |flavor|
+      it "keeps reading the live buffer after -str on a frozen #{flavor} string" do
+        expect_ok(<<~RUBY)
+          require "nosj"
+          payload = "v" * 4000
+          10.times do
+            text = %({"a": [1, 2, 3], "k": "\#{payload}", "z": 9}) + ""
+            src = #{(flavor == "subclass") ? "Class.new(String).new(text)" : "text.tap { _1.instance_variable_set(:@tag, 1) }"}
+            src.freeze
+            text = nil
+            doc = NOSJ.lazy(src)
+            -src
+            GC.start
+            $churn = Array.new(3000) { "Q" * 4100 }
+            raise "corrupted k" unless doc["k"] == payload
+            raise "corrupted z" unless doc["z"] == 9
+            raise "corrupted a" unless doc["a"].to_a == [1, 2, 3]
+          end
+          puts "ALL-OK"
+        RUBY
+      end
+    end
+  end
+
   describe "NOSJ.splice with values whose to_json misbehaves" do
     # Each value's to_json attacks what splice holds while generating:
     # the source bytes, or the only Ruby reference to a later value.

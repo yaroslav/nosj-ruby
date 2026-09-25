@@ -23,17 +23,17 @@ use crate::pointer::{path_to_pointer, push_escaped_token};
 use crate::state::PULL_STATE;
 
 /// The document bytes behind a node tree. A frozen Ruby source is
-/// borrowed zero-copy: freezing rules out mutation, and every node
-/// GC-marks the string with `rb_gc_mark` semantics, which both keeps it
-/// alive and pins it against compaction, so the captured pointer stays
-/// valid for as long as any node exists. Anything else is copied once.
+/// borrowed zero-copy: freezing rules out any change to its CONTENT,
+/// and every node GC-marks the string with `rb_gc_mark` semantics
+/// (alive, and pinned against compaction). Freezing does NOT pin the
+/// buffer, though: deduplicating a frozen String subclass or a string
+/// carrying ivars (`-str`) swaps in an identical shared buffer and
+/// frees the old one. So the bytes are re-read from the string on every
+/// access; same content means every span stays valid. Anything else is
+/// copied once.
 pub(crate) enum DocBytes {
     Owned(Vec<u8>),
-    Frozen {
-        source: rb_sys::VALUE,
-        ptr: *const u8,
-        len: usize,
-    },
+    Frozen(rb_sys::VALUE),
     /// A read-only file mapping (`NOSJ.load_lazy_file`): pages never
     /// touched are never read off disk. Concurrent modification of the
     /// mapped file by another process is documented as unsupported
@@ -48,23 +48,29 @@ struct DocInner {
     opts: ParseNativeOpts,
 }
 
-// SAFETY: the bytes are immutable for the document's whole life (an
+// SAFETY: the content is immutable for the document's whole life (an
 // owned Vec, or a frozen Ruby string pinned and kept alive by every
-// node's GC mark), so cross-thread reads are plain shared reads; the
-// raw VALUE is only dereferenced by the GC mark, which runs at
-// safepoints (the ShadowHandle contract in state.rs). There is no
-// interior mutability anywhere in the type.
+// node's GC mark), so cross-thread reads are plain shared reads of it.
+// There is no interior mutability anywhere in the type.
 unsafe impl Send for DocInner {}
 unsafe impl Sync for DocInner {}
 
 impl DocInner {
+    /// The document bytes. For a frozen source the slice is valid only
+    /// until the next Ruby call (which could swap the string's buffer;
+    /// see DocBytes): callers finish with it, or call this again,
+    /// before running Ruby code.
     fn bytes(&self) -> &[u8] {
         match &self.bytes {
             DocBytes::Owned(v) => v,
-            // SAFETY: the source string is frozen (no mutation, no
-            // buffer reallocation) and pinned+kept alive by every
-            // node's GC mark; see DocBytes.
-            DocBytes::Frozen { ptr, len, .. } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
+            // SAFETY: a live T_STRING (kept alive and pinned by every
+            // node's GC mark), read fresh on each call; see DocBytes.
+            DocBytes::Frozen(source) => unsafe {
+                std::slice::from_raw_parts(
+                    rb_sys::macros::RSTRING_PTR(*source).cast::<u8>(),
+                    rb_sys::macros::RSTRING_LEN(*source) as usize,
+                )
+            },
             DocBytes::Mmap(m) => m,
         }
     }
@@ -88,7 +94,7 @@ pub struct LazyNode {
 
 impl DataTypeFunctions for LazyNode {
     fn mark(&self, marker: &magnus::gc::Marker) {
-        if let DocBytes::Frozen { source, .. } = self.doc.bytes {
+        if let DocBytes::Frozen(source) = self.doc.bytes {
             use magnus::rb_sys::FromRawValue;
             // SAFETY: the VALUE was a live, frozen string at node
             // creation and this mark is what keeps it that way.
@@ -180,11 +186,7 @@ pub fn lazy_native(
     // call, and the node's mark takes over from the first GC on.
     let bytes = if data.as_value().is_frozen() {
         use magnus::rb_sys::AsRawValue;
-        DocBytes::Frozen {
-            source: data.as_raw(),
-            ptr: input.as_ptr(),
-            len: input.len(),
-        }
+        DocBytes::Frozen(data.as_raw())
     } else {
         DocBytes::Owned(input.to_vec())
     };

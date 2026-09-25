@@ -11,6 +11,11 @@
   splice read freed memory, copying unrelated heap bytes into the
   result or crashing. All values are now generated before the source
   is read.
+- Fixed `NOSJ.lazy` reading freed memory when the source is a frozen
+  String subclass (such as `ActiveSupport::SafeBuffer`) or a frozen
+  string carrying instance variables, and it is later deduplicated
+  with `-str`: Ruby swaps such a string's buffer, and lazy nodes kept
+  reading the old one (wrong values, or a crash).
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`
