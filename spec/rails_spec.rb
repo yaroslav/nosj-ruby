@@ -134,8 +134,11 @@ RSpec.describe "require 'nosj/rails'" do
 
       parsed = ActiveSupport::JSON.decode('{"a":[1,true],"n":1.5}')
       raise "decode" unless parsed == {"a" => [1, true], "n" => 1.5}
-      # Rails 7.x passes quirks_mode: true; the fast path must accept it.
-      raise "quirks" unless JSON.parse("2", quirks_mode: true) == 2
+      # Rails 7.x passes quirks_mode: true, which json 2 ignores (the
+      # fast path must accept it) and json 3 refuses.
+      if JSON::VERSION.to_i < 3
+        raise "quirks" unless JSON.parse("2", quirks_mode: true) == 2
+      end
       puts "ALL-OK"
     RUBY
   end
