@@ -205,7 +205,8 @@ module NOSJ
 
   # Partial parsing by JSON Pointer (with the standard +~0+/+~1+
   # escapes). The matched subtree materializes under the same options
-  # as {.parse}.
+  # as {.parse}; +allow_nan+ and +allow_trailing_comma+ also govern the
+  # walk to it.
   #
   # @example
   #   NOSJ.at_pointer(json, "/users/3/name")  #=> "grace" or nil

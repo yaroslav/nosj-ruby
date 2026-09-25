@@ -132,6 +132,14 @@ RSpec.describe "NOSJ file APIs" do
       expect(NOSJ.dig_file(path, :count)).to eq(3)
     end
 
+    it "resolves under the grammar options" do
+      path = write_fixture('{"a": NaN, "b": [1,], "c": 2,}')
+      opts = {allow_nan: true, allow_trailing_comma: true}
+      expect(NOSJ.at_pointer_file(path, "/c", opts)).to eq(2)
+      expect(NOSJ.at_pointer_file(path, "/zz", opts)).to be_nil
+      expect { NOSJ.at_pointer_file(path, "/c") }.to raise_error(NOSJ::ParserError)
+    end
+
     it "returns nil for misses and negative indices" do
       path = write_fixture(doc)
       expect(NOSJ.at_pointer_file(path, "/nope")).to be_nil

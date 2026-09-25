@@ -172,6 +172,41 @@ RSpec.describe "NOSJ.lazy" do
     end
   end
 
+  describe "grammar extensions" do
+    it "walks and resolves allow_trailing_comma documents like parse accepts them" do
+      src = '{"a": 1, "b": [3, {"c": 4,},], "d": [],}'
+      lazy = NOSJ.lazy(src, allow_trailing_comma: true)
+      expect(lazy.size).to eq(3)
+      expect(lazy.keys).to eq(%w[a b d])
+      expect(lazy.to_h).to eq(NOSJ.parse(src, allow_trailing_comma: true))
+      expect(lazy["b"].size).to eq(2)
+      expect(lazy["b"].each.to_a.first).to eq(3)
+      expect(lazy["b"][1].keys).to eq(%w[c])
+      expect(lazy["b"][2]).to be_nil
+      expect(lazy["zz"]).to be_nil
+      expect(lazy.dig("b", 1, "c")).to eq(4)
+      expect(lazy.at_pointer("/b/5")).to be_nil
+    end
+
+    it "walks and resolves allow_nan documents like parse accepts them" do
+      src = '{"a": NaN, "b": [Infinity, -Infinity], "c": 1}'
+      lazy = NOSJ.lazy(src, allow_nan: true)
+      expect(lazy.size).to eq(3)
+      expect(lazy.keys).to eq(%w[a b c])
+      expect(lazy["a"]).to be_nan
+      expect(lazy["b"].to_a).to eq([Float::INFINITY, -Float::INFINITY])
+      expect(lazy["c"]).to eq(1)
+      expect(lazy["zz"]).to be_nil
+      expect(lazy.dig("b", 1)).to eq(-Float::INFINITY)
+    end
+
+    it "stays strict without the options" do
+      expect { NOSJ.lazy("[1,2,]").size }.to raise_error(NOSJ::ParserError)
+      expect { NOSJ.lazy('{"a":1,}')["z"] }.to raise_error(NOSJ::ParserError)
+      expect { NOSJ.lazy('{"a":NaN,"c":1}')["c"] }.to raise_error(NOSJ::ParserError)
+    end
+  end
+
   describe "#inspect" do
     it "shows kind and span size without dumping content" do
       lazy = NOSJ.lazy(doc)

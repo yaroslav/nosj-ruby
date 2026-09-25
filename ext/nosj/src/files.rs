@@ -193,7 +193,7 @@ fn resolve_file_pointer(
         let resolved = PULL_STATE.with(|cell| {
             let mut state = cell.borrow_mut();
             // SAFETY: UTF-8 checked by with_mapped_file.
-            unsafe { nosj::pointer_utf8_unchecked(&map, pointer, &mut state.bufs) }
+            unsafe { nosj::pointer_utf8_unchecked_with(&map, pointer, &mut state.bufs, o.popts) }
         });
         match resolved {
             Ok(None) => Ok(ruby.qnil().as_value()),

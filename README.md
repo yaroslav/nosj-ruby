@@ -151,7 +151,8 @@ Example: an early field resolves in ~0.35µs where `JSON.parse(json).dig(...)`
 costs ~980µs on the same document—three orders of magnitude. A field
 at the far end of a 570 KB document costs ~71µs, still 13× faster
 than parse-then-dig. Misses return nil; matched subtrees materialize
-with the same options as `parse` (`symbolize_names:`, `freeze:`).
+with the same options as `parse` (`symbolize_names:`, `freeze:`), and
+`allow_nan:`/`allow_trailing_comma:` govern the walk to them too.
 
 ### Files API
 

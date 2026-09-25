@@ -191,9 +191,9 @@ dependencies = [
 
 [[package]]
 name = "nosj"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d25913644b7871b36095cc3da27daf95ebf9508189c5d8ccfb16da3bdb9f802f"
+checksum = "3d398b0019f2d8bf39b10de6038451b0f3d96a9e3111748097192d8f57d6f120"
 dependencies = [
  "fast-float2",
 ]
