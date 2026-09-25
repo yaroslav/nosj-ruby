@@ -64,12 +64,18 @@ thread_local! {
     static PULL_STATE: Cell<Option<Box<PullState>>> = const { Cell::new(None) };
 }
 
-/// Run `f` on this thread's parse state (see [`with_taken`]; a state
-/// lost to a longjmp leaks its shadows' last VALUEs). Entries finish
-/// one use before the next: a nested call would start a fresh state.
+/// Run `f` on this thread's parse state, taken out like [`with_taken`]
+/// (a state lost to a longjmp leaks its shadows' last VALUEs; a nested
+/// call would start a fresh one). Unlike the generate scratch, parse
+/// bodies never run Ruby code, so the thread cannot hop native threads
+/// mid-call and one thread-local access serves both the take and the
+/// put-back: measured ~5ns per call on tiny documents against two.
 pub(crate) fn with_pull_state<R>(f: impl FnOnce(&mut PullState) -> R) -> R {
-    with_taken(&PULL_STATE, |slot| {
-        f(slot.get_or_insert_with(PullState::fresh))
+    PULL_STATE.with(|cell| {
+        let mut state = cell.take().unwrap_or_else(PullState::fresh);
+        let result = f(&mut state);
+        cell.set(Some(state));
+        result
     })
 }
 
