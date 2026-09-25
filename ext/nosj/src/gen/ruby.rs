@@ -124,12 +124,16 @@ pub(super) fn utf8_encindexes() -> (c_int, c_int) {
 // Coderange and encoding index live in RBasic flags (public ABI); reading
 // them inline instead of calling rb_enc_str_coderange / rb_enc_get_index is
 // how the gem avoids two C calls per string (RB_ENC_CODERANGE,
-// RB_ENCODING_GET_INLINED).
-const CR_MASK: u64 = 3 << 20;
-pub(super) const CR_7BIT: u64 = 1 << 20;
-pub(super) const CR_VALID: u64 = 2 << 20;
-const ENC_SHIFT: u64 = 22;
-const ENC_MASK: u64 = 127 << 22;
+// RB_ENCODING_GET_INLINED). The bit layout comes from rb-sys's bindings,
+// generated from the headers of the Ruby being built against, so it
+// follows any layout change instead of silently misreading flags.
+const CR_MASK: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_MASK as u64;
+pub(super) const CR_7BIT: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_7BIT as u64;
+pub(super) const CR_VALID: u64 = rb_sys::ruby_coderange_type::RUBY_ENC_CODERANGE_VALID as u64;
+const ENC_SHIFT: u64 = rb_sys::ruby_encoding_consts::RUBY_ENCODING_SHIFT as u64;
+const ENC_MASK: u64 = rb_sys::ruby_encoding_consts::RUBY_ENCODING_MASK as u64;
+/// Inline encoding-index sentinel: the real index is stored out of line.
+const ENC_INLINE_MAX: c_int = rb_sys::ruby_encoding_consts::RUBY_ENCODING_INLINE_MAX as c_int;
 
 #[inline(always)]
 pub(super) fn str_coderange(s: VALUE) -> u64 {
@@ -146,18 +150,18 @@ pub(super) fn str_coderange(s: VALUE) -> u64 {
 pub(super) fn str_enc_index(s: VALUE) -> c_int {
     let flags = unsafe { (*(s as *const rb_sys::RBasic)).flags };
     let idx = ((flags & ENC_MASK) >> ENC_SHIFT) as c_int;
-    if idx == 127 {
-        // RUBY_ENCODING_INLINE_MAX sentinel: index stored out of line.
+    if idx == ENC_INLINE_MAX {
         unsafe { rb_sys::rb_enc_get_index(s) }
     } else {
         idx
     }
 }
 
+/// `RB_SPECIAL_CONST_P` (immediates plus Qnil/Qfalse), through rb-sys's
+/// inline versioned stable API rather than a hand-copied bit test.
 #[inline(always)]
 pub(super) fn is_special_const(v: VALUE) -> bool {
-    // RB_SPECIAL_CONST_P: immediates plus Qnil/Qfalse.
-    (v & (ruby_special_consts::RUBY_IMMEDIATE_MASK as VALUE)) != 0 || v == QNIL || v == QFALSE
+    rb_sys::macros::SPECIAL_CONST_P(v)
 }
 
 /// Borrow a Ruby String's bytes.
