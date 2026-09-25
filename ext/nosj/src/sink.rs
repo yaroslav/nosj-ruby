@@ -51,9 +51,16 @@ pub(crate) enum SinkAbort {
 /// Measured split (twitter `valid?`): hashing and pushing each key is
 /// ~0-2%; the close-time check is the cost, hence [`SeenTable`].
 pub(crate) struct DupKeys<'a> {
-    fingerprints: &'a mut Vec<u64>,
-    table: &'a mut SeenTable,
+    scratch: &'a mut DupScratch,
     enabled: bool,
+}
+
+/// [`DupKeys`]' pooled buffers (per thread, in `PullState`): the key
+/// fingerprints of every open object, and the close-time set.
+#[derive(Default)]
+pub(crate) struct DupScratch {
+    fingerprints: Vec<u64>,
+    table: SeenTable,
 }
 
 /// Fixed seeds: fingerprints only need to spread keys, and a collision
@@ -80,7 +87,7 @@ const TABLE_MAX_KEYS: usize = TABLE_SLOTS / 2;
 /// per key usually decides. Each close claims a fresh epoch, and a slot
 /// is empty unless it carries the current one, so nothing is cleared
 /// between objects.
-pub(crate) struct SeenTable {
+struct SeenTable {
     slots: Box<[(u64, u32)]>,
     epoch: u32,
 }
@@ -126,28 +133,20 @@ impl SeenTable {
 }
 
 impl<'a> DupKeys<'a> {
-    pub(crate) fn new(
-        fingerprints: &'a mut Vec<u64>,
-        table: &'a mut SeenTable,
-        enabled: bool,
-    ) -> Self {
-        fingerprints.clear();
-        DupKeys {
-            fingerprints,
-            table,
-            enabled,
-        }
+    pub(crate) fn new(scratch: &'a mut DupScratch, enabled: bool) -> Self {
+        scratch.fingerprints.clear();
+        DupKeys { scratch, enabled }
     }
 
     #[inline(always)]
     pub(crate) fn mark(&self) -> usize {
-        self.fingerprints.len()
+        self.scratch.fingerprints.len()
     }
 
     #[inline(always)]
     pub(crate) fn key(&mut self, key: &[u8]) {
         if self.enabled {
-            self.fingerprints.push(FINGERPRINT.hash_one(key));
+            self.scratch.fingerprints.push(FINGERPRINT.hash_one(key));
         }
     }
 
@@ -157,16 +156,20 @@ impl<'a> DupKeys<'a> {
         if !self.enabled {
             return Ok(());
         }
-        let keys = &mut self.fingerprints[mark..];
+        let DupScratch {
+            fingerprints,
+            table,
+        } = &mut *self.scratch;
+        let keys = &mut fingerprints[mark..];
         let repeated = match keys.len() {
             n if n <= PAIRWISE_MAX => (1..n).any(|i| keys[..i].contains(&keys[i])),
-            n if n <= TABLE_MAX_KEYS => self.table.any_repeat(keys),
+            n if n <= TABLE_MAX_KEYS => table.any_repeat(keys),
             _ => {
                 keys.sort_unstable();
                 keys.windows(2).any(|w| w[0] == w[1])
             }
         };
-        self.fingerprints.truncate(mark);
+        fingerprints.truncate(mark);
         if repeated {
             Err(SinkAbort::DuplicateKey)
         } else {

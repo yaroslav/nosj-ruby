@@ -313,7 +313,7 @@ pub fn valid_native(
             let mut sink = NullSink {
                 depth: 0,
                 max_nesting: o.max_nesting,
-                dup_keys: DupKeys::new(&mut state.fingerprints, &mut state.seen, check_dups),
+                dup_keys: DupKeys::new(&mut state.dup, check_dups),
             };
             // Safety: coderange verified by utf8_input.
             unsafe { nosj::parse_utf8_unchecked_with(input, &mut state.bufs, &mut sink, o.popts) }

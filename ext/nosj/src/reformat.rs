@@ -216,7 +216,7 @@ fn reformat_over(ruby: &Ruby, input: &[u8], opts: &ReformatOpts) -> Result<RStri
                     depth: 0,
                     max_nesting: po.max_nesting,
                     allow_nan: gcfg.allow_nan,
-                    dup_keys: DupKeys::new(&mut state.fingerprints, &mut state.seen, check_dups),
+                    dup_keys: DupKeys::new(&mut state.dup, check_dups),
                 };
                 // Safety: callers verified UTF-8 (coderange or full scan).
                 unsafe {
