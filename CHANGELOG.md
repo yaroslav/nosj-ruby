@@ -25,6 +25,8 @@
   while `NOSJ.generate` built its `NOSJ::GeneratorError`.
 - The same leak when an autoloaded `JSON::Fragment` raised while
   loading during a strict or Rails-mode generate.
+- The same leak in `NOSJ.write_file` when constructing the `Errno`
+  exception for a failed write raised.
 - Fixed: lazy documents opened with `allow_trailing_comma: true` or
   `allow_nan: true` could not be walked. `size`, `keys`, `each`, and
   any lookup that missed or stepped over a trailing comma or a `NaN`

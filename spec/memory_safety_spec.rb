@@ -172,6 +172,30 @@ RSpec.describe "memory safety under hostile callbacks" do
     end
   end
 
+  describe "a raising Errno constructor on the file I/O error path" do
+    it "propagates from load_file and write_file without leaking the scratch" do
+      expect_ok(<<~RUBY)
+        require "nosj"
+        require "tmpdir"
+        class Errno::ENOENT
+          def initialize(*) = raise(ArgumentError, "boom in Errno#initialize")
+        end
+        missing = File.join(Dir.mktmpdir, "no", "such", "dir", "x.json")
+        [-> { NOSJ.load_file(missing) }, -> { NOSJ.write_file(missing, [1]) }].each do |call|
+          call.call
+          raise "no exception"
+        rescue ArgumentError => e
+          raise "wrong exception: \#{e.message}" unless e.message == "boom in Errno#initialize"
+        end
+        # write_file reports the I/O error from inside the generate
+        # scratch, so an escaping raise would leak the warm buffer.
+        define_method(:hostile_call) { NOSJ.write_file(missing, [1]) }
+        #{leak_check}
+        puts "ALL-OK"
+      RUBY
+    end
+  end
+
   describe "NOSJ.lazy over a frozen source" do
     # Deduplicating a frozen String subclass (or one carrying an ivar)
     # swaps its heap buffer and frees the old one; lazy nodes borrow

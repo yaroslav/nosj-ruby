@@ -58,6 +58,9 @@ fn errno_of(e: &std::io::Error) -> Option<i32> {
 
 /// Map an I/O failure onto the matching `Errno::*` exception (class
 /// parity with `File.read`/`File.write`; the message carries the path).
+/// Constructing it runs the class's `initialize` (overridable Ruby), so
+/// the call is protected; a raise there propagates in its place, as it
+/// would from `File.read`.
 fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     use magnus::rb_sys::FromRawValue;
     let Some(errno) = errno_of(e) else {
@@ -66,8 +69,13 @@ fn io_error(ruby: &Ruby, path: &str, e: &std::io::Error) -> Error {
     let Ok(cpath) = std::ffi::CString::new(path) else {
         return runtime_error(ruby, format!("{e} - {path}"));
     };
+    let raw =
+        match magnus::rb_sys::protect(|| unsafe { rb_sys::rb_syserr_new(errno, cpath.as_ptr()) }) {
+            Ok(raw) => raw,
+            Err(raised) => return raised,
+        };
     // SAFETY: rb_syserr_new returns a live Errno exception instance.
-    let exc = unsafe { Value::from_raw(rb_sys::rb_syserr_new(errno, cpath.as_ptr())) };
+    let exc = unsafe { Value::from_raw(raw) };
     match magnus::Exception::from_value(exc) {
         Some(exc) => exc.into(),
         None => runtime_error(ruby, format!("{e} - {path}")),
