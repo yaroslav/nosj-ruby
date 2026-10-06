@@ -215,6 +215,28 @@ RSpec.describe "splice / JSON Patch / merge patch" do
       end
     end
 
+    # Found by the patch fuzzer: a slash-free path used to read as the
+    # root, so add replaced the whole document.
+    it "refuses pointers without a leading slash like at_pointer, never as the root" do
+      doc = %({"a":1})
+      message = begin
+        NOSJ.at_pointer(doc, "a")
+      rescue ArgumentError => e
+        e.message
+      end
+      [
+        {"op" => "add", "path" => "a", "value" => 2},
+        {"op" => "remove", "path" => "a"},
+        {"op" => "replace", "path" => "a", "value" => 2},
+        {"op" => "test", "path" => "a", "value" => 1},
+        {"op" => "move", "from" => "/a", "path" => "b"},
+        {"op" => "copy", "from" => "/a", "path" => "b"},
+        {"op" => "copy", "from" => "a", "path" => "/b"}
+      ].each do |op|
+        expect { NOSJ.patch(doc, [op]) }.to raise_error(ArgumentError, message), op.inspect
+      end
+    end
+
     it "move onto itself is a no-op" do
       expect(NOSJ.patch(%({"a":1}), [{"op" => "move", "from" => "/a", "path" => "/a"}]))
         .to eq(%({"a":1}))
