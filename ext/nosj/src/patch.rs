@@ -119,11 +119,25 @@ fn container_children(
 }
 
 /// Split an RFC 6901 pointer into (parent, unescaped last token).
-/// Returns None for the root pointer "".
-fn split_pointer(pointer: &str) -> Option<(&str, String)> {
-    let cut = pointer.rfind('/')?;
+/// Returns None for the root pointer "" only: any other pointer must
+/// start with '/', else the crate's own InvalidPointer error raises as
+/// ArgumentError, exactly like `span_at`. (A slash-free path once read
+/// as the root, and `add` replaced the whole document.)
+fn split_pointer<'p>(ruby: &Ruby, pointer: &'p str) -> Result<Option<(&'p str, String)>, Error> {
+    if pointer.is_empty() {
+        return Ok(None);
+    }
+    if !pointer.starts_with('/') {
+        // Byte 0 is where the crate reports a missing leading slash.
+        let invalid = nosj::ParseError {
+            offset: 0,
+            kind: nosj::ErrorKind::InvalidPointer,
+        };
+        return Err(arg_error(ruby, invalid.to_string()));
+    }
+    let cut = pointer.rfind('/').unwrap_or(0);
     let token = pointer[cut + 1..].replace("~1", "/").replace("~0", "~");
-    Some((&pointer[..cut], token))
+    Ok(Some((&pointer[..cut], token)))
 }
 
 /// RFC 6902 array index token: digits only, no leading zeros.
@@ -211,7 +225,7 @@ fn op_add(
     value: &Insert,
     cfg: &GenConfig,
 ) -> Result<Vec<u8>, Error> {
-    let Some((parent, token)) = split_pointer(path) else {
+    let Some((parent, token)) = split_pointer(ruby, path)? else {
         // Root: the value becomes the entire document.
         return apply_edit(ruby, doc, 0, doc.len(), value, cfg);
     };
@@ -295,7 +309,7 @@ fn extend_insert(
 /// RFC 6902 `remove`: the entry disappears along with its key and one
 /// separating comma; surrounding formatting stays.
 fn op_remove(ruby: &Ruby, doc: &[u8], path: &str) -> Result<Vec<u8>, Error> {
-    let Some((parent, token)) = split_pointer(path) else {
+    let Some((parent, token)) = split_pointer(ruby, path)? else {
         return Err(patch_error(ruby, "cannot remove the root".into()));
     };
     let Some((pstart, pend)) = span_at(ruby, doc, parent)? else {

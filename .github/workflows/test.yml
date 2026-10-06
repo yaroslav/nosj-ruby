@@ -43,19 +43,26 @@ jobs:
   # The Rails-facing specs against the oldest supported ActiveSupport
   # lines (the main matrix already exercises the newest release): the
   # drop-in's quirks_mode path and the encoder seam differ across them.
+  #
+  # json is pinned per line, never left to resolve: unpinned, it follows
+  # whatever standard's rubocop allows, and standard 1.57 let json 3 in
+  # overnight. ActiveSupport 7.1 and 8.0 pass quirks_mode to JSON.generate
+  # and JSON.parse, which json 3 rejects even without nosj, so they stay
+  # on json 2; 7.2 and 8.1 run on json 3.
   rails-compat:
-    name: Rails compat (activesupport ${{ matrix.activesupport }})
+    name: Rails compat (activesupport ${{ matrix.activesupport }}, json ${{ matrix.json }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { activesupport: "~> 7.1.0", ruby: "3.3" }
-          - { activesupport: "~> 7.2.0", ruby: "3.4" }
-          - { activesupport: "~> 8.0.0", ruby: "3.4" }
-          - { activesupport: "~> 8.1.0", ruby: "4.0" }
+          - { activesupport: "~> 7.1.0", json: "< 3", ruby: "3.3" }
+          - { activesupport: "~> 7.2.0", json: "~> 3.0", ruby: "3.4" }
+          - { activesupport: "~> 8.0.0", json: "< 3", ruby: "3.4" }
+          - { activesupport: "~> 8.1.0", json: "~> 3.0", ruby: "4.0" }
     env:
       NOSJ_ACTIVESUPPORT_VERSION: ${{ matrix.activesupport }}
+      NOSJ_JSON_VERSION: ${{ matrix.json }}
 
     steps:
       - uses: actions/checkout@v6
@@ -67,8 +74,8 @@ jobs:
           cargo-cache: true
 
       # The committed lockfile resolves the newest ActiveSupport; the
-      # pin needs a fresh resolution.
-      - name: Bundle with the pinned ActiveSupport
+      # pins need a fresh resolution.
+      - name: Bundle with the pinned ActiveSupport and json
         run: |
           rm Gemfile.lock
           bundle install

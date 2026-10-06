@@ -1,3 +1,13 @@
+## [0.5.1] - 2026-10-06
+
+- Fixed: `NOSJ.patch` read a `path` without the leading slash (`"a"`
+  instead of `"/a"`) as the root pointer, so `add`, `copy`, and `move`
+  silently replaced the whole document with the value instead of
+  raising, and `remove` reported `cannot remove the root`. Such paths
+  now raise the same `ArgumentError` as `NOSJ.at_pointer`
+  (`JSON Pointer must be empty or start with '/'`) in every op. The
+  bug dates back to 0.3.0. Found by fuzzing.
+
 ## [0.5.0] - 2026-09-25
 
 **json 3.0 compatibility.** nosj now matches the behavior of the json
