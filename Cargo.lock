@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "nosj_native"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ahash",
  "magnus",

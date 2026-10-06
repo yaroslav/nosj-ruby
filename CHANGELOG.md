@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.5.1] - 2026-10-06
 
 - Fixed: `NOSJ.patch` read a `path` without the leading slash (`"a"`
   instead of `"/a"`) as the root pointer, so `add`, `copy`, and `move`
