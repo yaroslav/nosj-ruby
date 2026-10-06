@@ -140,11 +140,19 @@ module NOSJFuzz
     raise "yielded values diverge from per-line parses" unless yielded.eql?(reference)
 
     if status == :ok && !yielded.empty?
-      # Parsed values are always generable: parse refuses lone
-      # surrogates, the only source of unencodable strings.
-      ndjson = stage("generate_lines") { NOSJ.generate_lines_native(yielded, nil) }
+      # Parse refuses lone surrogates, the only unencodable strings, but
+      # an overflow float (1e999, 124.4e044754) parses to Infinity, which
+      # generates only under allow_nan; it lifts exactly that refusal,
+      # and the round-trip then reads Infinity back under it too.
+      opts = nil
+      ndjson = begin
+        NOSJ.generate_lines_native(yielded, nil)
+      rescue NOSJ::GeneratorError
+        opts = {allow_nan: true}
+        stage("generate_lines with allow_nan") { NOSJ.generate_lines_native(yielded, opts) }
+      end
       back = []
-      NOSJ.each_line_native(ndjson, nil) { |v| back << v }
+      NOSJ.each_line_native(ndjson, opts) { |v| back << v }
       raise "generate_lines does not round-trip" unless back.eql?(yielded)
     end
     nil
