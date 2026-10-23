@@ -5,8 +5,7 @@ require "rspec/core/rake_task"
 
 RSpec::Core::RakeTask.new(:spec)
 
-# CI's json-compat bundle has no standard (see Gemfile).
-require "standard/rake" unless ENV["NOSJ_JSON_VERSION"]
+require "standard/rake"
 
 require "rb_sys/extensiontask"
 
