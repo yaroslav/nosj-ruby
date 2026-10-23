@@ -1,3 +1,8 @@
+## [0.5.2] - 2026-10-24
+
+- Updated dependencies, Magnus bumped to 0.9.3.
+- Tested against json 3.1 by default; json 2 stays covered.
+
 ## [0.5.1] - 2026-10-06
 
 - Fixed: `NOSJ.patch` read a `path` without the leading slash (`"a"`
